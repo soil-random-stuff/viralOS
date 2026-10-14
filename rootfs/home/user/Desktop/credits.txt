@@ -1,6 +1,8 @@
 Limine: bootloader
 lwIP: TCP/IP stack
 lwext4: ext4 filesystem
+Mbed TLS: secure connections (https)
+Mozilla: the trusted root certificates
 Linux kernel: the xHCI, USB, AHCI, NVMe, HD Audio, Intel e1000/e1000e, Realtek r8169 and filesystem drivers were ported from or written after its sources
 minimp3 (lieff), stb_vorbis (Sean Barrett), dr_flac / dr_wav (David Reid): audio decoding
 stb_image_write (Sean Barrett): PNG saving

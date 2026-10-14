@@ -366,6 +366,7 @@ struct os_userfs_entry {
  */
 #define SYS_USER        68  /* user(OS_USER_GET, char buf[OS_USER_MAX]) / user(OS_USER_SET, name) */
 #define SYS_CHMOD       69  /* chmod(path, mode): a file's or folder's permission bits (07777) */
+#define SYS_GETRANDOM   70  /* getrandom(buf, len) -> len: random bytes good enough for keys */
 #define OS_USER_GET     0
 #define OS_USER_SET     1
 #define OS_USER_MAX     32

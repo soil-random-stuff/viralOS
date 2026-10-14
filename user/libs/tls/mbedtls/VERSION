@@ -1,0 +1,10 @@
+Mbed TLS 3.6.7 (LTS), from https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-3.6.7
+mbedtls-3.6.7.tar.bz2 sha256 a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6
+
+Only library/, include/, LICENSE and README.md, unchanged (the build files are left out).
+Dual-licensed Apache-2.0 OR GPL-2.0-or-later; viralOS uses it under the GPL.
+Configured by ../tls_config.h (on top of include/mbedtls/mbedtls_config.h) and built by the Makefile.
+
+The trusted roots, rootfs/etc/ssl/certs/ca-certificates.crt, are Mozilla's, as curl publishes them:
+https://curl.se/ca/cacert.pem of 2026-09-25, sha256
+a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505

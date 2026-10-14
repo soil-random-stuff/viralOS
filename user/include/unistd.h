@@ -73,6 +73,9 @@ int rescan(const char *disk);
 /* Pseudo-terminal: fds[0] for the terminal window, fds[1] for the programs in it. */
 int pty_open(int32_t fds[2]);
 
+/* Random bytes from the kernel, good enough for keys. Returns len, or a negative error. */
+int getrandom(void *buf, size_t len);
+
 /* Wall clock, seconds since 1970 (in local time: see <time.h>). */
 uint64_t wall_time(void);
 

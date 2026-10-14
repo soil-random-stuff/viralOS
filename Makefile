@@ -119,7 +119,7 @@ LIBDIR := build/user/Library
 USER_LIB_SRCS := $(wildcard user/lib/*.c)
 USER_LIB_OBJS := $(USER_LIB_SRCS:user/%=build/user/pic/%.o)
 USER_LIBS     := $(notdir $(patsubst %/,%,$(wildcard user/libs/*/)))
-USER_LIBS_OBJ  = $(patsubst user/%,build/user/pic/%.o,$(wildcard user/libs/$(1)/*.c))
+USER_LIBS_OBJ  = $(patsubst user/%,build/user/pic/%.o,$(wildcard user/libs/$(1)/*.c) $(LIB_EXTRA_SRCS_$(1)))
 USER_SOS      := $(LIBDIR)/libos.so $(USER_LIBS:%=$(LIBDIR)/lib%.so)
 # What each library uses besides itself (recorded in it, so the kernel loads those too).
 LIB_DEPS_gfx     := os
@@ -130,6 +130,14 @@ LIB_DEPS_fileops := os image audio
 LIB_DEPS_gui     := os gfx ttf image
 LIB_DEPS_netconf := os
 LIB_DEPS_users   := os gfx ttf image
+LIB_DEPS_tls     := os
+LIB_DEPS_http    := os tls
+# libtls is mbedTLS (vendored, user/libs/tls/mbedtls) under a small API (tls.c, <tls.h>).
+LIB_EXTRA_SRCS_tls := $(wildcard user/libs/tls/mbedtls/library/*.c)
+build/user/pic/libs/tls/%.c.o: USER_CPPFLAGS += -Iuser/libs/tls -Iuser/libs/tls/mbedtls/include -DMBEDTLS_USER_CONFIG_FILE='"tls_config.h"'
+# (the compiler is Linux's: without these mbedTLS would expect glibc)
+build/user/pic/libs/tls/mbedtls/%.c.o: USER_PIC_CFLAGS += -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers \
+	-U__linux__ -U__linux -Ulinux -U__unix__ -U__unix -Uunix -U__gnu_linux__
 # A program names only the libraries it uses (--as-needed).
 USER_LINK     := -L$(LIBDIR) --as-needed -los $(USER_LIBS:%=-l%)
 USER_CRT0     := build/user/lib/crt0.S.o

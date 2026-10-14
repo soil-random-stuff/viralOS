@@ -457,8 +457,12 @@ void users_sha256_hex(const void *data, size_t len, char *out) {
     to_hex(d, 32, out);
 }
 
-/* A salt: there's no random device yet, so hash what varies (the TSC, the time, the pid). */
+/* A salt: from the kernel's generator; if that fails, a hash of what varies (the TSC, the time,
+   the pid). */
 static void random_salt(uint8_t out[SALT_BYTES]) {
+    if (getrandom(out, SALT_BYTES) == SALT_BYTES) {
+        return;
+    }
     struct {
         uint64_t tsc, us, pid, time;
         uint8_t stack;

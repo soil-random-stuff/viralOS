@@ -71,6 +71,7 @@ static const char *const license_text =
     "- Limine: the bootloader\n"
     "- lwIP: the TCP/IP stack\n"
     "- lwext4: the ext4 filesystem\n"
+    "- Mbed TLS: secure connections; Mozilla's trusted root certificates\n"
     "- The Linux kernel: the xHCI, USB, AHCI, NVMe, HD Audio, Intel e1000/e1000e, Realtek r8169 and "
     "filesystem drivers were ported from or written after its sources\n"
     "- minimp3 (lieff), stb_vorbis (Sean Barrett), dr_flac and dr_wav (David Reid): audio decoding\n"

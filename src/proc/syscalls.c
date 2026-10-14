@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include "lib/random.h"
 #include "proc/file.h"
 #include "proc/linux.h"
 #include "proc/process.h"
@@ -481,6 +482,20 @@ static int64_t sys_chmod(struct process *p, uint64_t upath, uint64_t mode) {
     return err ? err : vfs_chmod(p->cwd, path, (uint32_t)mode);
 }
 
+static int64_t sys_getrandom(struct process *p, uint64_t ubuf, uint64_t len) {
+    uint8_t chunk[256];
+    for (uint64_t done = 0; done < len;) {
+        size_t n = len - done < sizeof(chunk) ? (size_t)(len - done) : sizeof(chunk);
+        random_bytes(chunk, n);
+        if (!copy_to_user(p->space, ubuf + done, chunk, n)) {
+            return -EFAULT;
+        }
+        done += n;
+    }
+    memset(chunk, 0, sizeof(chunk));
+    return (int64_t)len;
+}
+
 static int64_t sys_unmount(struct process *p, uint64_t upath) {
     char path[VFS_PATH_MAX];
     int64_t err = copy_path(p, upath, path);
@@ -849,6 +864,7 @@ void syscall_dispatch(struct interrupt_frame *f) {
     case SYS_UPTIME_US:       ret = (int64_t)uptime_us(); break;
     case SYS_USER:            ret = sys_user(p, a1, a2); break;
     case SYS_CHMOD:           ret = sys_chmod(p, a1, a2); break;
+    case SYS_GETRANDOM:       ret = sys_getrandom(p, a1, a2); break;
     default:          ret = -ENOSYS; break;
     }
     f->rax = (uint64_t)ret;

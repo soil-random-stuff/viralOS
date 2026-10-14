@@ -111,6 +111,10 @@ int chmod(const char *path, uint32_t mode) {
     return (int)syscall3(SYS_CHMOD, (long)path, (long)mode, 0);
 }
 
+int getrandom(void *buf, size_t len) {
+    return (int)syscall3(SYS_GETRANDOM, (long)buf, (long)len, 0);
+}
+
 int unmount(const char *path) {
     return (int)syscall3(SYS_UNMOUNT, (long)path, 0, 0);
 }

@@ -22,6 +22,7 @@ real PCs (BIOS and UEFI) and in QEMU.
 - **Input:** PS/2 and USB keyboards and mice
 - **Sound:** Intel HD Audio
 - **Network:** lwIP TCP/IP stack, DHCP, DNS, BSD sockets; virtio-net, Intel e1000 and e1000e, Realtek r8169/8125; PCI MSI and MSI-X
+- **HTTPS:** TLS 1.2/1.3 (mbedTLS) with certificate checking against the Mozilla root store, an HTTP/1.1 client library, `wget` and `sha256sum`; a kernel random generator (ChaCha20, seeded from RDSEED/RDRAND and timing jitter)
 
 ### Userland
 - Its own C library, 2D graphics with anti-aliasing and shadows, and a TrueType font renderer
@@ -29,7 +30,7 @@ real PCs (BIOS and UEFI) and in QEMU.
 - MP3, OGG Vorbis, FLAC and WAV playback
 - The usual Unix layout (`/usr/bin`, `/etc`, `/home`, `/media`, `/tmp`) and freedesktop `.desktop` launchers
 - Users and groups (`/etc/passwd`, `/etc/shadow`, PBKDF2-SHA256 password hashes): `sudo`, `su`, `useradd`, `userdel`, `passwd`, `id`
-- A shell with line editing, history, Tab completion, redirects and background jobs, and commands like `ls`, `cp`, `ps`, `kill`, `ping` and `netctl`
+- A shell with line editing, history, Tab completion, redirects and background jobs, and commands like `ls`, `cp`, `ps`, `kill`, `ping`, `netctl` and `wget`
 
 ### DDE, the Divine Desktop Environment
 - A compositing window manager: shadows, rounded corners, resizing, maximize, full screen
@@ -78,6 +79,9 @@ viralOS stands on a lot of great free and open-source work:
 
 - **Limine**: the bootloader
 - **lwIP**: the TCP/IP stack
+- **lwext4**: the ext4 filesystem
+- **Mbed TLS**: TLS and the cryptography under it
+- **Mozilla**'s list of trusted root certificates (via [curl.se/ca](https://curl.se/ca/cacert.html))
 - **The Linux kernel**: the xHCI, USB, AHCI, NVMe, HD Audio, Intel e1000/e1000e, Realtek r8169 and filesystem drivers were ported from or written after its sources
 - **minimp3** (lieff), **stb_vorbis** (Sean Barrett), **dr_flac** and **dr_wav** (David Reid): audio decoding
 - **stb_image_write** (Sean Barrett): PNG saving
@@ -92,6 +96,7 @@ Built with [Claude Code](https://claude.com/claude-code).
 
 viralOS is under the [GNU General Public License, version 2](LICENSE) (parts of it are ported from
 Linux, which is GPL v2). The third-party parts keep their own licenses, all compatible with it: lwIP
-(BSD), lwext4 in `src/fs/ext4/lwext4` (BSD; `ext4_extent.c` and `ext4_xattr.c` GPL v2 or later), the
-vendored audio and image libraries (public domain / MIT), the fonts (DejaVu, SIL OFL), and the ported
+(BSD), lwext4 in `src/fs/ext4/lwext4` (BSD; `ext4_extent.c` and `ext4_xattr.c` GPL v2 or later), Mbed TLS
+in `user/libs/tls/mbedtls` (Apache-2.0 or GPL-2.0-or-later; used under the GPL), the root certificates
+(MPL 2.0), the vendored audio and image libraries (public domain / MIT), the fonts (DejaVu, SIL OFL), and the ported
 tools, which are GPL and are downloaded and built from their upstream sources.

@@ -43,7 +43,7 @@ def btn(b, down): return {"type": "btn", "data": {"down": down, "button": b}}
 KEYS = {' ': 'spc', '-': 'minus', '.': 'dot', '/': 'slash', '\n': 'ret', '>': ('shift', 'dot'), '|': ('shift','backslash'),
         '_': ('shift', 'minus'), ':': ('shift', 'semicolon'), '~': ('shift', 'grave_accent'), "'": 'apostrophe',
         '"': ('shift', 'apostrophe'), ',': 'comma', '*': ('shift', '8'), '(': ('shift', '9'), ')': ('shift', '0'),
-        '=': 'equal', '&': ('shift', '7'), '<': ('shift', 'comma'), '+': ('shift', 'equal'), '%': ('shift', '5')}
+        '=': 'equal', '&': ('shift', '7'), '<': ('shift', 'comma'), '+': ('shift', 'equal'), '%': ('shift', '5'), '?': ('shift', 'slash')}
 def key(names):
     names = names if isinstance(names, tuple) else (names,)
     cmd("send-key", keys=[{"type": "qcode", "data": n} for n in names]); time.sleep(0.08)

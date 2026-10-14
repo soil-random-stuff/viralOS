@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include "lib/random.h"
 #include "proc/linux.h"
 #include "proc/elf.h"
 #include "proc/file.h"
@@ -74,25 +75,6 @@ struct linux_iovec {
 
 /* --- the start-up stack ------------------------------------------------------------------------------------ */
 
-static uint64_t rng_state;
-
-static uint64_t rdtsc(void) {
-    uint32_t lo, hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    return (uint64_t)hi << 32 | lo;
-}
-
-static uint64_t random64(void) {
-    if (!rng_state) {
-        rng_state = rdtsc() ^ (uptime_ms() << 20) ^ 0x9E3779B97F4A7C15ull;
-    }
-    rng_state ^= rdtsc();
-    rng_state ^= rng_state << 13;   /* xorshift64*: not cryptographic, plenty for UUIDs and salts */
-    rng_state ^= rng_state >> 7;
-    rng_state ^= rng_state << 17;
-    return rng_state * 0x2545F4914F6CDD1Dull;
-}
-
 /* Push bytes onto the new stack (growing down); returns their address. */
 static int push(struct process *p, uint64_t *sp, const void *data, size_t len) {
     *sp -= len;
@@ -121,14 +103,14 @@ int linux_setup_stack(struct process *p, int argc, char **argv, const struct elf
         err = push(p, &sp, env[i], strlen(env[i]) + 1);
         envp[i] = sp;
     }
-    uint64_t random_bytes[2] = { random64(), random64() };
+    uint64_t at_random[2] = { random_u64(), random_u64() };
     if (!err) {
         err = push(p, &sp, "x86_64", 7);
     }
     uint64_t platform = sp;
     sp &= ~15ull;
     if (!err) {
-        err = push(p, &sp, random_bytes, 16);
+        err = push(p, &sp, at_random, 16);
     }
     uint64_t random_at = sp;
     if (err) {
@@ -839,15 +821,17 @@ static int64_t l_sysinfo(struct process *p, uint64_t ubuf) {
 }
 
 static int64_t l_getrandom(struct process *p, uint64_t ubuf, uint64_t len) {
+    uint8_t chunk[256];
     uint64_t done = 0;
     while (done < len) {
-        uint64_t r = random64();
-        size_t n = len - done < 8 ? (size_t)(len - done) : 8;
-        if (!copy_to_user(p->space, ubuf + done, &r, n)) {
+        size_t n = len - done < sizeof(chunk) ? (size_t)(len - done) : sizeof(chunk);
+        random_bytes(chunk, n);
+        if (!copy_to_user(p->space, ubuf + done, chunk, n)) {
             return -EFAULT;
         }
         done += n;
     }
+    memset(chunk, 0, sizeof(chunk));
     return (int64_t)len;
 }
 
