@@ -1140,7 +1140,7 @@ static void do_edit_partition(struct disk *d, struct volume *v, int choice, cons
     run_job();
 }
 
-/* NTFS and ext4 are read-only in the kernel; read-write, a program serves them (ntfsd, ext4d). */
+/* Mounted read-only unless the options say "rw": NTFS (then served by ntfsd) and ext4 (lwext4 in the kernel). */
 static bool can_be_rw(const struct volume *v) {
     return strcmp(v->fs, "ntfs") == 0 || strncmp(v->fs, "ext", 3) == 0;
 }

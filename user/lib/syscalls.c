@@ -103,6 +103,14 @@ int mount_device(const char *device, const char *path) {
     return (int)syscall3(SYS_MOUNT, (long)device, (long)path, 0);
 }
 
+int mount_device_writable(const char *device, const char *path) {
+    return (int)syscall3(SYS_MOUNT, (long)device, (long)path, OS_MOUNT_WRITABLE);
+}
+
+int chmod(const char *path, uint32_t mode) {
+    return (int)syscall3(SYS_CHMOD, (long)path, (long)mode, 0);
+}
+
 int unmount(const char *path) {
     return (int)syscall3(SYS_UNMOUNT, (long)path, 0, 0);
 }

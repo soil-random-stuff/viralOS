@@ -355,6 +355,8 @@ static int apply_table(struct block_device *disk) {
     /* First check: nothing mounted may change. */
     struct block_device *mount_new[MAX_PARTITIONS + 1];
     int to_mount = 0;
+    struct block_device *root_only[MAX_PARTITIONS];   /* not mounted, unless one is the installed system */
+    int to_root = 0;
     int err = 0;
     mutex_lock(&registry_lock);
     for (struct block_device *d = devices; d && !err; d = d->next) {
@@ -402,6 +404,8 @@ static int apply_table(struct block_device *disk) {
                 struct block_device *p = add_partition(disk, &entries[i]);
                 if (p && entries[i].mountable) {
                     mount_new[to_mount++] = p;
+                } else if (p && mount_wants_root()) {
+                    root_only[to_root++] = p;   /* (an EFI System Partition may be the installed system) */
                 }
             }
         }
@@ -413,6 +417,9 @@ static int apply_table(struct block_device *disk) {
     kfree(entries);
     for (int i = 0; i < to_mount; i++) {
         mount_auto(mount_new[i]);
+    }
+    for (int i = 0; i < to_root; i++) {
+        mount_try_root(root_only[i]);
     }
     return err;
 }

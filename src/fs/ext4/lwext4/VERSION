@@ -1,0 +1,7 @@
+lwext4 master 58bcf89a121b72d4fb66334f1693d3b30e4cb9c5
+
+Changed for viralOS (everything else as upstream):
+- metadata_csum_seed support: ext4_sb_csum_seed() in ext4_super.c replaces the nine
+  crc32c(UUID) seeds, and the feature is in EXT4_SUPPORTED_FINCOM (ext4_types.h).
+- ext4_dir_idx.c: new directory blocks are zeroed (ext4_dir_dx_init left the leaf's inode field
+  as stale memory, under the checksum, so e2fsck saw "fails checksum" on empty directories).

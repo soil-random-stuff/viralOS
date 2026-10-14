@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Install viralOS
+Comment=Put viralOS on this computer's disk.
+Icon=/usr/share/dde-res/Icons/Apps/OsInstall.png
+Exec=/usr/bin/divine-installer

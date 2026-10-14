@@ -210,7 +210,8 @@ struct os_audio_mixer {
 #define SYS_SEEK     45  /* seek(fd, offset, whence: OS_SEEK_*) -> the new offset */
 #define SYS_FSYNC    46  /* fsync(fd): everything written to it is on the disk */
 #define SYS_BLOCKDEV 47  /* blockdev(index, struct os_block_info *); -ENOENT past the end */
-#define SYS_MOUNT    48  /* mount(device name, path or NULL): mount it (NULL: where it would go by itself) */
+#define SYS_MOUNT    48  /* mount(device name, path or NULL, OS_MOUNT_*): mount it (NULL: where it would go by itself) */
+#define OS_MOUNT_WRITABLE 1   /* read-write even where it'd be read-only at first (ext4) */
 #define SYS_UNMOUNT  49  /* unmount(path): unmount that one filesystem */
 #define SYS_RESCAN   50  /* rescan(disk name): read its partition table again (-EBUSY if mounted) */
 
@@ -251,11 +252,12 @@ struct os_drive_info {
     uint64_t free;
     uint32_t flags;              /* OS_DRIVE_* */
     uint32_t reserved;
+    char uuid[40];               /* the filesystem's serial/UUID as blkid shows it ("1A2B-3C4D"), may be empty */
 };
 
 /*
- * Filesystems served by a program (userfs): NTFS and ext4 mounted read-write are run by ports of
- * the Linux tools' libraries (/usr/bin/ntfsd, /usr/bin/ext4d), which the kernel starts when a
+ * Filesystems served by a program (userfs): NTFS mounted read-write is run by a port of the Linux
+ * tools' library (/usr/bin/ntfsd), which the kernel starts when a
  * filesystem's mount options say "rw". The program opens the device, then calls userfs(): the
  * filesystem appears in the tree, and the kernel sends it requests on the returned channel
  * (struct os_userfs_request; it answers each with a struct os_userfs_reply), with file data and
@@ -363,6 +365,7 @@ struct os_userfs_entry {
  * started from then on inherit it). Their home is /home/<name>. No permissions are enforced yet.
  */
 #define SYS_USER        68  /* user(OS_USER_GET, char buf[OS_USER_MAX]) / user(OS_USER_SET, name) */
+#define SYS_CHMOD       69  /* chmod(path, mode): a file's or folder's permission bits (07777) */
 #define OS_USER_GET     0
 #define OS_USER_SET     1
 #define OS_USER_MAX     32
@@ -527,6 +530,9 @@ struct os_proc_info {
     char user[OS_USER_MAX];      /* who it runs for ("" = nobody: started before anyone logged in) */
 };
 
+#define OS_FIRMWARE_BIOS 1
+#define OS_FIRMWARE_UEFI 2
+
 struct os_sysinfo {
     uint64_t memory_total;       /* bytes of RAM the kernel manages */
     uint64_t memory_free;
@@ -534,6 +540,8 @@ struct os_sysinfo {
     uint64_t uptime_ms;
     uint32_t processes;
     uint32_t cpus;
+    uint32_t firmware;           /* how the machine started: OS_FIRMWARE_BIOS, OS_FIRMWARE_UEFI (0: unknown) */
+    uint32_t reserved;
     uint64_t idle_ms;            /* time the CPUs spent with nothing to run, added up: CPU use is
                                     1 - (change in idle_ms) / (change in uptime_ms * cpus) */
 };

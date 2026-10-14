@@ -14,6 +14,8 @@ struct block_device;
 struct vnode;
 
 void devfs_init(void);
+/* After vfs_set_root: /dev again, on the new root. */
+void devfs_reattach(void);
 /* Give a newly registered device its file (block.c calls this). */
 void devfs_add(struct block_device *d);
 /* The device behind a /dev file, or NULL for any other vnode. */

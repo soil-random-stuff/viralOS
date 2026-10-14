@@ -6,8 +6,9 @@
  * from the disk into the caller's buffer (a file being copied shouldn't push
  * all the filesystem metadata out). Writes work the same way: small ones
  * land in cached pieces and are marked dirty, big sector-aligned ones go to
- * the disk directly. bio_sync writes the dirty pieces out; the filesystems
- * call it at the end of every change, so a drive pulled out between two
+ * the disk directly. bio_sync writes the dirty pieces out, in disk order and
+ * neighbours merged into big requests; the filesystems call it at the end of
+ * every change (except journaled ones), so a drive pulled out between two
  * operations is consistent.
  */
 
@@ -280,16 +281,98 @@ int bio_write(struct block_device *d, uint64_t offset, const void *buf, size_t l
     return err;
 }
 
-int bio_sync(struct block_device *d) {
-    struct block_device *disk = d->disk;
-    int err = 0;
-    mutex_lock(&lock);
-    for (struct piece *p = lru_head; p && dirty_count; p = p->lru_next) {
+/* Sort pieces by their place on the disk (a heap sort: no recursion, no extra memory). */
+static void sift_down(struct piece **a, int root, int end) {
+    for (;;) {
+        int child = root * 2 + 1, top = root;
+        if (child <= end && a[child]->index > a[top]->index) {
+            top = child;
+        }
+        if (child + 1 <= end && a[child + 1]->index > a[top]->index) {
+            top = child + 1;
+        }
+        if (top == root) {
+            return;
+        }
+        struct piece *t = a[root];
+        a[root] = a[top];
+        a[top] = t;
+        root = top;
+    }
+}
+
+static void sort_pieces(struct piece **a, int n) {
+    for (int i = n / 2 - 1; i >= 0; i--) {
+        sift_down(a, i, n - 1);
+    }
+    for (int end = n - 1; end > 0; end--) {
+        struct piece *t = a[0];
+        a[0] = a[end];
+        a[end] = t;
+        sift_down(a, 0, end - 1);
+    }
+}
+
+/* Write the disk's dirty pieces in order, neighbours together as one request (up to DIRECT_MAX):
+   a few big writes instead of many small ones in no particular order. */
+static int write_back_all(struct block_device *disk) {
+    int n = 0;
+    struct piece **list = dirty_count ? kmalloc(sizeof(struct piece *) * (size_t)dirty_count) : NULL;
+    uint8_t *run = list ? kmalloc(DIRECT_MAX) : NULL;
+    if (!run) {
+        kfree(list);
+        int err = 0;   /* (no memory for that: one at a time) */
+        for (struct piece *p = lru_head; p && dirty_count; p = p->lru_next) {
+            if (p->disk == disk && p->dirty) {
+                int e = write_back(p);
+                err = err ? err : e;
+            }
+        }
+        return err;
+    }
+    for (struct piece *p = lru_head; p && n < dirty_count; p = p->lru_next) {
         if (p->disk == disk && p->dirty) {
-            int e = write_back(p);
-            err = err ? err : e;
+            list[n++] = p;
         }
     }
+    sort_pieces(list, n);
+    int err = 0;
+    for (int i = 0; i < n;) {
+        /* A run of whole, consecutive pieces. */
+        int j = i + 1;
+        while (j < n && list[j]->index == list[j - 1]->index + 1 && list[j - 1]->bytes == PIECE &&
+               (uint64_t)(j - i + 1) * PIECE <= DIRECT_MAX) {
+            j++;
+        }
+        int e;
+        if (j - i == 1) {
+            e = write_back(list[i]);
+        } else if (disk->gone) {
+            e = -EIO;
+        } else {
+            size_t bytes = 0;
+            for (int k = i; k < j; k++) {
+                memcpy(run + bytes, list[k]->data, list[k]->bytes);
+                bytes += list[k]->bytes;
+            }
+            e = disk->write(disk, list[i]->index * PIECE / disk->sector_size, (uint32_t)(bytes / disk->sector_size), run);
+            for (int k = i; !e && k < j; k++) {
+                list[k]->dirty = false;
+                dirty_count--;
+            }
+        }
+        err = err ? err : e;
+        i = j;
+    }
+    kfree(run);
+    kfree(list);
+    return err;
+}
+
+int bio_sync(struct block_device *d) {
+    struct block_device *disk = d->disk;
+    mutex_lock(&lock);
+    int err = write_back_all(disk);
     mutex_unlock(&lock);
     if (!err && disk->flush && !disk->gone) {
         err = disk->flush(disk);

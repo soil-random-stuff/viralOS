@@ -19,7 +19,10 @@ struct dnode *diskfs_new(struct mount *m, const char *name, enum vnode_type type
     strlcpy(n->v.name, name, sizeof(n->v.name));
     n->v.type = type;
     n->v.size = type == VNODE_FILE ? size : 0;
-    n->v.mode = type == VNODE_DIR ? (m->read_only ? 0555 : 0755) : (m->read_only ? 0444 : 0644);
+    /* Filesystems without permissions (FAT, exFAT, NTFS) show everything as runnable, like Linux's
+       default for them: the installed system's programs are on FAT. (ext4 sets its real modes.) */
+    n->v.mode = m->read_only ? 0555 : 0755;
+    (void)type;
     n->v.ops = &diskfs_vnode_ops;
     n->v.sb = &m->sb;
     n->m = m;
@@ -83,8 +86,16 @@ static int writable(struct dnode *n) {
     return n->m->read_only ? -EROFS : 0;
 }
 
-/* After a change: everything on disk, in order. */
+/* After a change: everything on disk, in order. (A journaled filesystem stays consistent without
+   that; the flusher writes its changes out within half a second.) */
 static int sync(struct mount *m, int err) {
+    if (m->journaled) {
+        m->dirty = true;
+        return err;
+    }
+    if (m->driver->sync) {
+        m->driver->sync(m);   /* (what the driver holds back first: lwext4's cache) */
+    }
     int e = bio_sync(m->dev);
     return err ? err : e;
 }
@@ -115,6 +126,26 @@ static int64_t d_write(struct vnode *v, uint64_t offset, const void *buf, size_t
     }
     n->m->dirty = true;
     return n->m->ops->write(n, offset, buf, len);
+}
+
+static int d_chmod(struct vnode *v, uint32_t mode) {
+    struct dnode *n = dn(v);
+    int err = writable(n);
+    if (err) {
+        return err;
+    }
+    if (n->m->ops->set_mode) {
+        mutex_lock(&n->m->sb.lock);
+        err = n->m->ops->set_mode(n, mode);
+        mutex_unlock(&n->m->sb.lock);
+        if (!err) {
+            n->m->dirty = true;
+        }
+    }
+    if (!err) {
+        v->mode = mode;
+    }
+    return err;
 }
 
 static int d_truncate(struct vnode *v, uint64_t size) {
@@ -266,6 +297,7 @@ static const struct vnode_ops diskfs_vnode_ops = {
     .read = d_read,
     .write = d_write,
     .truncate = d_truncate,
+    .chmod = d_chmod,
     .lookup = d_lookup,
     .readdir = d_readdir,
     .create = d_create,

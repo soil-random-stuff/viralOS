@@ -25,6 +25,7 @@
 #include "drivers/timer.h"
 #include "fs/tar.h"
 #include "fs/devfs.h"
+#include "fs/mount.h"
 #include "fs/vfs.h"
 #include "lib/errno.h"
 #include "lib/string.h"
@@ -101,6 +102,12 @@ static volatile struct limine_rsdp_request rsdp_request = {
 };
 
 __attribute__((used, section(".limine_requests")))
+static volatile struct limine_executable_cmdline_request cmdline_request = {
+    .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST_ID,
+    .revision = 0,
+};
+
+__attribute__((used, section(".limine_requests")))
 static volatile struct limine_module_request module_request = {
     .id = LIMINE_MODULE_REQUEST_ID,
     .revision = 0,
@@ -163,6 +170,31 @@ static void print_boot_info(struct limine_framebuffer *fb) {
     kprintf("\n");
 }
 
+/* How the machine started (os_sysinfo.firmware): the installer sets up the disk to start the same way. */
+uint32_t boot_firmware;
+
+/* The installed system's root: "root=UUID=1A2B-3C4D" on the command line (limine.conf's cmdline). */
+static char root_uuid[40];
+
+static void read_cmdline(void) {
+    if (firmware_type_request.response) {
+        uint64_t t = firmware_type_request.response->firmware_type;
+        boot_firmware = t == LIMINE_FIRMWARE_TYPE_X86BIOS ? OS_FIRMWARE_BIOS
+                      : t == LIMINE_FIRMWARE_TYPE_EFI32 || t == LIMINE_FIRMWARE_TYPE_EFI64 ? OS_FIRMWARE_UEFI : 0;
+    }
+    const char *c = cmdline_request.response ? cmdline_request.response->cmdline : NULL;
+    for (; c && *c; c++) {
+        if (strncmp(c, "root=UUID=", 10) == 0 && (c == cmdline_request.response->cmdline || c[-1] == ' ')) {
+            size_t n = 0;
+            for (c += 10; *c && *c != ' ' && n < sizeof(root_uuid) - 1; c++) {
+                root_uuid[n++] = *c;
+            }
+            root_uuid[n] = '\0';
+            break;
+        }
+    }
+}
+
 static void find_initrd(void) {
     struct limine_module_response *resp = module_request.response;
     if (!resp) {
@@ -182,7 +214,9 @@ static void find_initrd(void) {
 static void mount_root(void) {
     vfs_init();
     if (!initrd_data) {
-        kprintf("[WARN] No initrd module: root filesystem is empty\n");
+        if (!root_uuid[0]) {
+            kprintf("[WARN] No initrd module: root filesystem is empty\n");
+        }
         return;
     }
 
@@ -315,8 +349,17 @@ static void kmain_stage2(void) {
     }
     mount_root();
     devfs_init();
+    if (root_uuid[0]) {
+        mount_set_root(root_uuid);   /* the installed system: / is on a disk */
+    }
     block_init();
     usb_init();
+    if (root_uuid[0]) {
+        if (!mount_wait_root(20000)) {
+            panic("can't find the disk viralOS is installed on (root=UUID=%s)", root_uuid);
+        }
+        devfs_reattach();
+    }
     net_init();
     status_ok("TCP/IP stack ready (lwIP)");
     net_drivers_init();
@@ -386,6 +429,7 @@ void kmain(void) {
               vmm_nx_enabled() ? "on" : "unavailable");
 
     find_initrd();
+    read_cmdline();   /* (Limine's answers go away later) */
 
     /* ACPI tables are read now: the RSDP response is in bootloader memory. */
     if (!rsdp_request.response || !acpi_init(rsdp_request.response->address)) {

@@ -4,11 +4,15 @@
 # NVME=a.img,... attaches NVMe SSDs; SATA=a.img,... SATA disks on the q35's AHCI controller.
 # NIC=virtio-net-pci (default) / e1000 / e1000e / none: the network card, on QEMU's NAT network.
 # QEMU_EXTRA="..." adds arguments.
+# NO_CD=1 boots from the first disk instead of viralos.iso (an installed system).
 import json, shlex, socket, subprocess, sys, time, os
 W, H = 1280, 800
 os.makedirs("build", exist_ok=True)
 q = subprocess.Popen(["qemu-system-x86_64", "-M", "q35", "-cpu", "max", "-smp", os.environ.get("SMP", "4"), "-m", "512M",
-    "-rtc", "base=localtime", "-cdrom", "viralos.iso", "-boot", "order=d", "-display", "none",
+    "-rtc", "base=localtime"]
+    # NO_CD=1: no ISO, start from the first disk (an installed viralOS).
+    + (["-boot", "order=c"] if os.environ.get("NO_CD") else ["-cdrom", "viralos.iso", "-boot", "order=d"])
+    + ["-display", "none",
     "-serial", "file:build/serial.log",
     "-audiodev", "wav,id=snd0,path=build/audio.wav", "-device", "ich9-intel-hda", "-device", "hda-output,audiodev=snd0", "-qmp", "unix:/tmp/qmp.sock,server,wait=off"]
     + (["-device", "qemu-xhci,id=xhci"] if os.environ.get("DISKS") else [])

@@ -300,9 +300,6 @@ const char *userfs_server_for(const char *driver_name) {
     if (strcmp(driver_name, "NTFS") == 0 || strcmp(driver_name, "ntfs") == 0) {
         return _PATH_BIN "/ntfsd";
     }
-    if (strcmp(driver_name, "ext4") == 0) {
-        return _PATH_BIN "/ext4d";
-    }
     return NULL;
 }
 

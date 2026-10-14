@@ -24,6 +24,15 @@ struct vnode *vfs_root(void) {
     return root;
 }
 
+void vfs_set_root(struct vnode *fs_root) {
+    mutex_lock(&vfs_lock);
+    fs_root->refcount++;   /* (held for good, like the first root) */
+    fs_root->parent = NULL;
+    fs_root->name[0] = '\0';
+    root = fs_root;
+    mutex_unlock(&vfs_lock);
+}
+
 /* --- references ------------------------------------------------------------ */
 
 static void maybe_free(struct vnode *n) {
@@ -171,6 +180,21 @@ int vfs_create(struct vnode *cwd, const char *path, enum vnode_type type, uint32
     if (!err && out) {
         node->refcount++;
         *out = node;
+    }
+    mutex_unlock(&vfs_lock);
+    return err;
+}
+
+int vfs_chmod(struct vnode *cwd, const char *path, uint32_t mode) {
+    mutex_lock(&vfs_lock);
+    struct vnode *node;
+    int err = resolve_locked(cwd, path, &node);
+    if (!err) {
+        if (node->ops->chmod) {
+            err = node->ops->chmod(node, mode & 07777);
+        } else {
+            node->mode = mode & 07777;
+        }
     }
     mutex_unlock(&vfs_lock);
     return err;

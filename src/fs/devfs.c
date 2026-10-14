@@ -197,6 +197,10 @@ void devfs_init(void) {
     strlcpy(log_node.name, "log", sizeof(log_node.name));
     log_node.mode = 0222;
     log_node.ops = &log_ops;
+    devfs_reattach();
+}
+
+void devfs_reattach(void) {
     vfs_create(NULL, _PATH_DEV, VNODE_DIR, 0755, NULL);
     int err = vfs_attach(_PATH_DEV, &root);
     if (err) {

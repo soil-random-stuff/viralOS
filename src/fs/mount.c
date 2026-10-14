@@ -17,10 +17,65 @@
 #define CONFIG _PATH_FSTAB
 
 /* Which drivers get a look, in order (the ones with a distinctive signature first). */
-static const struct fs_driver *const drivers[] = { &ntfs_driver, &exfat_driver, &ext4_driver, &fat_driver };
+/* (ext4_ro_driver after ext4_driver: it takes the ext4 filesystems lwext4 won't.) */
+static const struct fs_driver *const drivers[] = { &ntfs_driver, &exfat_driver, &ext4_driver, &ext4_ro_driver,
+                                                   &fat_driver };
 
 static struct mutex lock = MUTEX_INIT;
 static struct mount *mounts;
+
+/* The installed system's root filesystem (see mount_set_root). */
+static char root_uuid[40];
+static struct mount *root_mount;
+
+static bool same_uuid(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'a' && *a <= 'z' ? (char)(*a - 32) : *a;
+        char y = *b >= 'a' && *b <= 'z' ? (char)(*b - 32) : *b;
+        if (x != y) {
+            return false;
+        }
+    }
+    return *a == *b;
+}
+
+void mount_set_root(const char *uuid) {
+    strlcpy(root_uuid, uuid, sizeof(root_uuid));
+}
+
+bool mount_wait_root(uint64_t ms) {
+    for (uint64_t waited = 0; !root_mount && waited < ms; waited += 50) {
+        sched_sleep_ms(50);
+    }
+    return root_mount != NULL;
+}
+
+struct mount *mount_root_fs(void) {
+    return root_mount;
+}
+
+/* The filesystem the system was installed on: it becomes /. */
+static int mount_as_root(struct mount *m) {
+    if (m->read_only && m->driver->make_writable && !m->dev->read_only && !m->dev->disk->read_only) {
+        int err = m->driver->make_writable(m);
+        if (err) {
+            kprintf("[WARN] Root filesystem: %s stays read-only: %s\n", m->dev->name, strerror(err));
+        }
+    }
+    m->is_root = true;
+    strlcpy(m->path, "/", sizeof(m->path));
+    vfs_set_root(&m->root->v);
+    mutex_lock(&lock);
+    m->next = mounts;
+    mounts = m;
+    mutex_unlock(&lock);
+    root_mount = m;
+    uint64_t total = 0, free = 0;
+    m->driver->statfs(m, &total, &free);
+    kprintf("[ OK ] Root filesystem: %s (%s%s, %lu MB, %lu MB free)\n", m->dev->name, m->fs_name,
+            m->read_only ? ", read-only" : "", total / 1000000, free / 1000000);
+    return 0;
+}
 
 /* Between operations (the tree is held), write out what file writes left in the cache. */
 static void flusher(void *arg) {
@@ -318,6 +373,9 @@ static int do_mount(struct block_device *d, const char *path, bool automatic, bo
     if (d->read_only || d->disk->read_only) {
         m->read_only = true;
     }
+    if (root_uuid[0] && !root_mount && same_uuid(m->uuid, root_uuid)) {
+        return mount_as_root(m);
+    }
 
     char configured[VFS_PATH_MAX];
     bool noauto = false, rw = false;
@@ -329,7 +387,14 @@ static int do_mount(struct block_device *d, const char *path, bool automatic, bo
         kfree(m);
         return 0;
     }
-    const char *server = userfs_server_for(m->driver->name);
+    if (allow_rw && have_config && rw && m->read_only && m->driver->make_writable && !d->read_only &&
+        !d->disk->read_only) {
+        int werr = m->driver->make_writable(m);
+        if (werr) {
+            kprintf("[WARN] Disk: %s: can't write to it (%s); mounting it read-only\n", d->name, strerror(werr));
+        }
+    }
+    const char *server = m->read_only ? userfs_server_for(m->driver->name) : NULL;
     if (allow_rw && have_config && rw && server && !d->read_only && !d->disk->read_only) {
         /* Read-write: the kernel's driver lets go, and the program takes over the device. */
         m->dead = true;
@@ -355,8 +420,48 @@ void mount_auto(struct block_device *d) {
     do_mount(d, NULL, true, true);
 }
 
-int mount_device(struct block_device *d, const char *path) {
-    return do_mount(d, path, false, true);
+int mount_device(struct block_device *d, const char *path, bool writable) {
+    int err = do_mount(d, path, false, true);
+    if (err || !writable) {
+        return err;
+    }
+    /* Asked for read-write (the installer): if it came up read-only and can be writable, it is. */
+    struct mount *m = mount_of(d);
+    if (m && m->read_only && m->driver->make_writable && !d->read_only && !d->disk->read_only) {
+        err = m->driver->make_writable(m);
+    }
+    return err;
+}
+
+bool mount_wants_root(void) {
+    return root_uuid[0] && !root_mount;
+}
+
+void mount_try_root(struct block_device *d) {
+    if (!mount_wants_root() || mount_busy(d)) {
+        return;
+    }
+    struct mount *m = kzalloc(sizeof(*m));
+    if (!m) {
+        return;
+    }
+    m->sb.lock = (struct mutex)MUTEX_INIT;
+    m->dev = d;
+    int err = -EINVAL;
+    for (size_t i = 0; i < sizeof(drivers) / sizeof(drivers[0]) && err; i++) {
+        m->driver = drivers[i];
+        err = drivers[i]->mount(m);
+    }
+    if (!err && same_uuid(m->uuid, root_uuid)) {
+        m->read_only = m->read_only || d->read_only || d->disk->read_only;
+        mount_as_root(m);
+        return;
+    }
+    if (!err) {
+        m->dead = true;   /* (not it: left alone, as before) */
+        m->driver->unmount(m);
+    }
+    kfree(m);
 }
 
 /* Take a mount off the tree and free it (sync first unless the disk is gone). */
@@ -372,8 +477,10 @@ static void unmount(struct mount *m) {
 
     struct vnode *mp = m->mountpoint;
     bool gone = m->dev->gone || m->dev->disk->gone;
-    vfs_detach(mp);
-    if (m->created_dir) {
+    if (!m->is_root) {
+        vfs_detach(mp);
+    }
+    if (!m->is_root && m->created_dir) {
         vfs_unlink(NULL, m->path);
     }
 
@@ -437,6 +544,9 @@ static int unmount_path(const char *path, bool force) {
     if (!found) {
         return -ENOENT;
     }
+    if (found->is_root) {
+        return -EBUSY;   /* (the system runs from it) */
+    }
     if (!force && process_files_on(&found->sb)) {
         return -EBUSY;   /* a program has a file open on it (ejecting or unplugging still goes ahead) */
     }
@@ -459,6 +569,9 @@ int mount_eject(const char *path) {
         if (strcmp(m->path, path) == 0) {
             disk = m->dev->disk;
         }
+    }
+    if (root_mount && disk == root_mount->dev->disk) {
+        disk = NULL;   /* (the system's own disk: not ejected) */
     }
     mutex_unlock(&lock);
     if (!disk) {

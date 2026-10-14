@@ -7,7 +7,8 @@
 #   e2fsprogs         mke2fs  tune2fs  e2fsck  resize2fs
 #   ntfsprogs-plus    mkntfs  ntfslabel  ntfsresize  ntfsck  ntfsinfo
 #   parted + fatresize  fatresize
-#   servers           ext4d  ntfsd  (read-write NTFS/ext4 for userfs, from ports/src)
+#   servers           ntfsd  (read-write NTFS for userfs, from ports/src; ext4 is in the kernel)
+#   limine            limine  (bios-install, for the installer)
 #
 # They run unmodified through the kernel's Linux layer (src/proc/linux.c); scripts/mark_linux.py
 # marks them so. Building happens in ~/ports-work (WSL's own disk: much faster than /mnt/c).
@@ -198,23 +199,30 @@ build_fatresize() {
 # The read-write filesystem servers for userfs (os-source/ports/src), on the libraries built above.
 build_servers() {
     echo "== servers"
-    local P=$OS/ports/src E2S=$WORK/e2fsprogs-master E2B=$WORK/e2fsprogs-build NS=$WORK/ntfsprogs-plus-main
-    [ -f "$E2B/lib/libext2fs.a" ] || build_e2fsprogs
+    local P=$OS/ports/src NS=$WORK/ntfsprogs-plus-main
     [ -f "$NS/libntfs/libntfs.a" ] || build_ntfsprogs
     mkdir -p "$WORK/servers" && cd "$WORK/servers"
-    $CC -O2 -Wall -Wno-unused-parameter -I"$OS/abi" -I"$E2B/lib" -I"$E2S/lib" -o ext4d \
-        "$P/ext4d.c" "$P/ufs_server.c" "$E2B/lib/libext2fs.a" "$E2B/lib/libcom_err.a" "$E2B/lib/libuuid.a"
     if [ -f "$P/ntfsd.c" ]; then
         $CC -O2 -Wall -Wno-unused-parameter -DHAVE_CONFIG_H -include "$NS/config.h" -include sys/sysmacros.h \
             -I"$OS/abi" -I"$NS" -I"$NS/include" -I"$NS/include/ntfs" -I"$NS/libntfs" -o ntfsd \
             "$P/ntfsd.c" "$P/ufs_server.c" "$NS/libntfs/libntfs.a"
         finish ntfsd
     fi
-    finish ext4d
+}
+
+# limine: the bootloader's own installer ("limine bios-install /dev/sata0"), which the viralOS installer
+# runs to make a disk start on BIOS PCs. From the Limine binary release the Makefile downloads.
+build_limine() {
+    echo "== limine"
+    [ -f "$OS/limine/limine.c" ] || git clone --depth=1 --branch=v11.x-binary \
+        https://github.com/limine-bootloader/limine.git "$OS/limine"
+    mkdir -p "$WORK/limine" && cd "$WORK/limine"
+    $CC -O2 -w -I"$OS/limine" -o limine "$OS/limine/limine.c"
+    finish limine
 }
 
 targets=("$@")
-[ ${#targets[@]} -eq 0 ] && targets=(dosfstools exfatprogs e2fsprogs ntfsprogs fatresize servers)
+[ ${#targets[@]} -eq 0 ] && targets=(dosfstools exfatprogs e2fsprogs ntfsprogs fatresize servers limine)
 for t in "${targets[@]}"; do
     "build_$t"
 done

@@ -28,6 +28,9 @@ struct fs_driver {
     int (*statfs)(struct mount *m, uint64_t *total, uint64_t *free);
     /* Write out what the driver itself holds (before the block cache is synced); may be NULL. */
     int (*sync)(struct mount *m);
+    /* Mounted read-only to begin with (another system's disk), it may switch to read-write when the
+       mount options say so or it's the installed system's own /. 0 or -errno; may be NULL. */
+    int (*make_writable)(struct mount *m);
 };
 
 struct process;
@@ -47,7 +50,9 @@ struct mount {
     bool read_only;
     bool case_insensitive;      /* FAT, exFAT, NTFS: "Readme.TXT" finds "README.txt" */
     bool dead;                  /* unplugged or ejected: every operation fails */
+    bool is_root;               /* mounted as / (the installed system): never unmounted by hand */
     bool dirty;                 /* file data written since the last sync */
+    bool journaled;             /* changes go through a journal: no full sync after each one (the flusher does it) */
     uint64_t server_pid;        /* userfs: the program serving it (it may write the device); 0: none */
     void *fs;                   /* driver-private */
     struct mount *next;
@@ -57,10 +62,20 @@ struct mount {
 void mount_init(void);
 void mount_auto(struct block_device *d);
 /* Mount a device (by hand: the Disks app) at `path`, or NULL for where it would go by itself. */
-int mount_device(struct block_device *d, const char *path);
+int mount_device(struct block_device *d, const char *path, bool writable);
 /* Unmount the one filesystem mounted at `path`: -EBUSY if a program has a file open on it.
    mount_unmount_forced: even then (its files fail with EIO from then on). */
 int mount_unmount(const char *path);
+/* The installed system: the filesystem with this UUID ("root=UUID=..." on the kernel command
+   line) becomes / when its disk shows up; set before the disks are looked at. mount_wait_root:
+   false if it hasn't shown up after `ms`. */
+void mount_set_root(const char *uuid);
+bool mount_wait_root(uint64_t ms);
+struct mount *mount_root_fs(void);   /* NULL: / is the RAM filesystem */
+/* Still looking for the root? Then a partition that's otherwise left alone (an EFI System Partition)
+   gets mount_try_root: mounted as / if it's the one, else not at all. */
+bool mount_wants_root(void);
+void mount_try_root(struct block_device *d);
 int mount_unmount_forced(const char *path);
 /* Before power off: unmount everything cleanly. */
 void mount_unmount_all(void);

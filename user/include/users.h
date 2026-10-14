@@ -51,6 +51,9 @@ const char *session_display_name(void);
 bool users_has_password(const struct user_account *a);
 bool users_is_locked(const struct user_account *a);     /* shadow password starting with '!' */
 bool users_check_password(const struct user_account *a, const char *password);
+/* What /etc/shadow keeps for this password ("" for none): for writing another system's files (the
+   installer). out: 160 bytes is plenty. */
+void users_hash_password(const char *password, char *out, size_t size);
 
 /* Changes (each rewrites the files). 0 or -errno (-EEXIST, -ENOENT, -EINVAL). */
 /* + /home/<name>. password: "" for none, NULL for a locked account (until `passwd` gives it one). */

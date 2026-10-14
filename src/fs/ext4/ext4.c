@@ -1,567 +1,514 @@
 /*
- * ext2/ext3/ext4, read-only. After Linux's fs/ext4:
+ * ext2/ext3/ext4, read-write, on lwext4 (fs/ext4/lwext4, by Grzegorz Kostka and others: extents,
+ * hashed folders, metadata checksums and the journal). This file connects it to diskfs:
  *
- *   super.c     the superblock and which features we can read (ext4_fill_super)
- *   balloc.c    group descriptors, META_BG placement (ext4_bg_has_super,
- *               descriptor_loc)
- *   inode.c     finding an inode in its group's table (__ext4_get_inode_loc),
- *               inline data, the old indirect block map (indirect.c)
- *   extents.c   extent trees: index nodes down to leaves (ext4_find_extent)
- *   dir.c       directory blocks read linearly, which works for hashed
- *               (htree) folders too: their index blocks look like empty entries
+ *   the disk      an ext4_blockdev whose reads and writes go to the kernel's block cache (bio_*);
+ *                 on a writable filesystem lwext4's own cache holds changes back (write-back, much
+ *                 faster) until lw_sync, which diskfs calls with every sync
+ *   names         lwext4 works with paths under a mount point of its own ("/vos3/"): a node's
+ *                 path is its names up to this filesystem's root
+ *   files         an lwext4 file handle per open file node, opened when it's first read or written
  *
- * Why read-only: writing needs the journal (jbd2) and metadata checksums kept
- * right; a mistake there damages a Linux system's disk. Reading can't.
- * Symbolic links show as small files holding the target path; device files,
- * pipes and sockets aren't shown.
+ * A filesystem mounts read-only (it's often another system's disk) and becomes writable when the
+ * mount options say "rw" or it's the installed system's own / (make_writable): then a journal that
+ * needs replaying is replayed, and changes go through the journal if there is one.
+ * Filesystems lwext4 won't take (features it doesn't know) go to the read-only driver (ext4_ro.c).
  */
+
+#include <ext4.h>
+#include <ext4_fs.h>
+#include <ext4_inode.h>
+#include <ext4_super.h>
 
 #include "fs/filesystems.h"
 #include "fs/diskfs.h"
 #include "block/block.h"
-#include "lib/errno.h"
+#include "drivers/rtc.h"
 #include "lib/kprintf.h"
 #include "lib/string.h"
 #include "mm/heap.h"
+#include "sched/sync.h"
 
-#define MAGIC              0xEF53
-#define INC_FILETYPE       0x0002
-#define INC_RECOVER        0x0004
-#define INC_JOURNAL_DEV    0x0008
-#define INC_META_BG        0x0010
-#define INC_EXTENTS        0x0040
-#define INC_64BIT          0x0080
-#define INC_MMP            0x0100
-#define INC_FLEX_BG        0x0200
-#define INC_EA_INODE       0x0400
-#define INC_DIRDATA        0x1000
-#define INC_CSUM_SEED      0x2000
-#define INC_LARGEDIR       0x4000
-#define INC_INLINE_DATA    0x8000
-#define INC_ENCRYPT        0x10000
-#define INC_CASEFOLD       0x20000
-#define INC_KNOWN (INC_FILETYPE | INC_RECOVER | INC_META_BG | INC_EXTENTS | INC_64BIT | INC_MMP | INC_FLEX_BG | \
-                   INC_EA_INODE | INC_CSUM_SEED | INC_LARGEDIR | INC_INLINE_DATA | INC_ENCRYPT | INC_CASEFOLD)
-#define RO_SPARSE_SUPER    0x0001
+#define SLOTS        CONFIG_EXT4_MOUNTPOINTS_COUNT
+#define PATH_MAX_LW  1024
 
-#define FL_INDEX           0x00001000
-#define FL_EXTENTS         0x00080000
-#define FL_INLINE_DATA     0x10000000
-#define FL_ENCRYPT         0x00000800
-
-#define S_IFMT   0170000
-#define S_IFREG  0100000
-#define S_IFDIR  0040000
-#define S_IFLNK  0120000
-
-#define ROOT_INO 2
-
-struct ext4 {
-    struct mount *m;
+struct lw {
+    struct ext4_blockdev_iface iface;
+    struct ext4_blockdev bdev;
     struct block_device *dev;
-    uint32_t block_size;
-    uint64_t blocks;
-    uint64_t free_blocks;
-    uint32_t first_data_block;
-    uint32_t blocks_per_group, inodes_per_group;
-    uint32_t inode_size, desc_size;
-    uint32_t groups;
-    uint32_t incompat, ro_compat, first_meta_bg;
-    uint64_t *inode_tables;      /* per group: the inode table's first block */
+    int slot;
+    char name[16];               /* lwext4's name for the device: "vos3" */
+    char mp[16];                 /* its mount point: "/vos3/" */
+    bool writable, journal;
+    uint8_t *sector;             /* lwext4's one-sector buffer */
 };
 
-struct enode {
-    uint32_t ino;
-    uint32_t flags;
-    uint8_t iblock[60];          /* i_block: extent root, block map, inline data or a short link */
-    /* The extent last found, for sequential reads. */
-    uint64_t ext_first, ext_len, ext_start;
-    bool ext_zero;
+/* A file or folder: an lwext4 handle for files, once opened. */
+struct node {
+    ext4_file file;
+    bool open, open_rw;
+    bool symlink;
 };
 
-static struct ext4 *E(struct dnode *n) {
-    return n->m->fs;
+static struct lw *slots[SLOTS];
+static struct mutex slots_lock = MUTEX_INIT;   /* lwext4's device and mount tables are shared */
+
+/* --- the disk ------------------------------------------------------------------------------------ */
+
+static int bd_open(struct ext4_blockdev *bdev) {
+    (void)bdev;
+    return EOK;
 }
 
-static struct enode *EN(struct dnode *n) {
-    return n->priv;
+static int bd_close(struct ext4_blockdev *bdev) {
+    (void)bdev;
+    return EOK;
 }
 
-static uint64_t block_pos(struct ext4 *e, uint64_t block) {
-    return block * e->block_size;
+static int bd_read(struct ext4_blockdev *bdev, void *buf, uint64_t blk, uint32_t count) {
+    struct lw *l = bdev->bdif->p_user;
+    uint32_t bs = bdev->bdif->ph_bsize;
+    return bio_read(l->dev, blk * bs, buf, (size_t)count * bs) ? EIO : EOK;
 }
 
-/* --- inodes ----------------------------------------------------------------------------------------------- */
+static int bd_write(struct ext4_blockdev *bdev, const void *buf, uint64_t blk, uint32_t count) {
+    struct lw *l = bdev->bdif->p_user;
+    uint32_t bs = bdev->bdif->ph_bsize;
+    return bio_write(l->dev, blk * bs, buf, (size_t)count * bs) ? EIO : EOK;
+}
 
-static int read_inode(struct ext4 *e, uint32_t ino, uint8_t *raw /* inode_size bytes */) {
-    if (ino < 1) {
-        return -EIO;
+/* --- paths --------------------------------------------------------------------------------------- */
+
+/* `n`'s path for lwext4: its mount point, then the names down from this filesystem's root. */
+static void path_of(struct dnode *n, char *out, size_t size) {
+    struct lw *l = n->m->fs;
+    const char *names[64];
+    int depth = 0;
+    for (struct dnode *p = n; p && p != n->m->root && depth < 64; p = (struct dnode *)p->v.parent) {
+        names[depth++] = p->v.name;
     }
-    uint32_t group = (ino - 1) / e->inodes_per_group, index = (ino - 1) % e->inodes_per_group;
-    if (group >= e->groups) {
-        return -EIO;
+    strlcpy(out, l->mp, size);
+    for (int i = depth - 1; i >= 0; i--) {
+        size_t len = strlen(out);
+        ksnprintf(out + len, size - len, "%s%s", names[i], i ? "/" : "");
     }
-    uint64_t pos = block_pos(e, e->inode_tables[group]) + (uint64_t)index * e->inode_size;
-    return bio_read(e->dev, pos, raw, e->inode_size);
 }
 
-static uint64_t inode_size_of(const uint8_t *raw) {
-    return get32(raw + 4) | (uint64_t)get32(raw + 108) << 32;
+static void child_path(struct dnode *dir, const char *name, char *out, size_t size) {
+    path_of(dir, out, size);
+    size_t len = strlen(out);
+    ksnprintf(out + len, size - len, "%s%s", out[len - 1] == '/' ? "" : "/", name);
 }
 
-/* --- mapping file blocks to disk blocks ---------------------------------------------------------------------- */
+static int err_of(int r) {
+    return r == EOK ? 0 : -(r < 0 ? -r : r);
+}
 
-/* ext4_find_extent: walk the tree from the inode down to the leaf that covers `lblock`.
-   Fills the extent (first logical block, length, first physical block); length 0: a hole. */
-static int find_extent(struct ext4 *e, struct enode *en, uint64_t lblock) {
-    uint8_t *node = en->iblock;
-    uint8_t *buf = NULL;
-    int err = 0;
-    for (int level = 0; level < 8; level++) {
-        if (get16(node) != 0xF30A) {
-            err = -EIO;
-            break;
+/* --- files and folders -------------------------------------------------------------------------- */
+
+static struct node *node_new(void) {
+    return kzalloc(sizeof(struct node));
+}
+
+/* The file's handle, opened (read-write if the filesystem is) when first needed. */
+static int handle(struct dnode *n, bool write, ext4_file **out) {
+    struct node *x = n->priv;
+    struct lw *l = n->m->fs;
+    if (!x) {
+        x = n->priv = node_new();
+        if (!x) {
+            return -ENOMEM;
         }
-        int entries = get16(node + 2), depth = get16(node + 6);
-        if (depth == 0) {
-            /* A leaf: the last extent starting at or before lblock. */
-            en->ext_len = 0;
-            en->ext_first = lblock;
-            uint64_t next_start = ~0ull;
-            for (int i = 0; i < entries; i++) {
-                const uint8_t *x = node + 12 + 12 * i;
-                uint32_t first = get32(x);
-                uint16_t len = get16(x + 4);
-                bool unwritten = len > 32768;
-                if (unwritten) {
-                    len = (uint16_t)(len - 32768);
-                }
-                if (first <= lblock && lblock < (uint64_t)first + len) {
-                    en->ext_first = first;
-                    en->ext_len = len;
-                    en->ext_start = get32(x + 8) | (uint64_t)get16(x + 6) << 32;
-                    en->ext_zero = unwritten;   /* allocated but never written: reads as zeros */
-                    break;
-                }
-                if (first > lblock && first < next_start) {
-                    next_start = first;
-                }
-            }
-            if (!en->ext_len) {
-                /* A hole up to the next extent. */
-                en->ext_len = next_start == ~0ull ? 1 : next_start - lblock;
-                en->ext_start = 0;
-                en->ext_zero = true;
-            }
-            break;
-        }
-        /* An index node: the last index whose first block is <= lblock. */
-        int pick = -1;
-        for (int i = 0; i < entries; i++) {
-            if (get32(node + 12 + 12 * i) <= lblock) {
-                pick = i;
-            }
-        }
-        if (pick < 0) {
-            pick = 0;
-        }
-        const uint8_t *ix = node + 12 + 12 * pick;
-        uint64_t child = get32(ix + 4) | (uint64_t)get16(ix + 8) << 32;
-        if (!buf && !(buf = kmalloc(e->block_size))) {
-            err = -ENOMEM;
-            break;
-        }
-        if ((err = bio_read(e->dev, block_pos(e, child), buf, e->block_size)) != 0) {
-            break;
-        }
-        node = buf;
     }
-    kfree(buf);
-    return err;
-}
-
-/* The old ext2/3 map: 12 direct blocks, then single, double and triple indirect. */
-static int map_indirect(struct ext4 *e, struct enode *en, uint64_t lblock, uint64_t *out) {
-    uint32_t per = e->block_size / 4;
-    if (lblock < 12) {
-        *out = get32(en->iblock + 4 * lblock);
+    if (x->open && (x->open_rw || !write)) {
+        *out = &x->file;
         return 0;
     }
-    lblock -= 12;
-    int levels;
-    uint32_t slot;
-    if (lblock < per) {
-        levels = 1;
-        slot = 12;
-    } else if ((lblock -= per) < (uint64_t)per * per) {
-        levels = 2;
-        slot = 13;
-    } else {
-        lblock -= (uint64_t)per * per;
-        levels = 3;
-        slot = 14;
+    if (x->open) {
+        ext4_fclose(&x->file);
+        x->open = false;
     }
-    uint64_t block = get32(en->iblock + 4 * slot);
-    for (int l = levels - 1; l >= 0 && block; l--) {
-        uint64_t div = 1;
-        for (int k = 0; k < l; k++) {
-            div *= per;
-        }
-        uint32_t index = (uint32_t)(lblock / div % per);
-        uint8_t b[4];
-        int err = bio_read(e->dev, block_pos(e, block) + (uint64_t)index * 4, b, 4);
-        if (err) {
-            return err;
-        }
-        block = get32(b);
+    static char path[PATH_MAX_LW];
+    path_of(n, path, sizeof(path));
+    int r = ext4_fopen2(&x->file, path, l->writable ? O_RDWR : O_RDONLY);
+    if (r != EOK) {
+        return err_of(r);
     }
-    *out = block;
+    x->open = true;
+    x->open_rw = l->writable;
+    *out = &x->file;
     return 0;
 }
 
-/* Read `len` bytes at `offset` of an inode's data (a run of blocks at a time). */
-static int64_t read_data(struct ext4 *e, struct enode *en, uint64_t size, uint64_t offset, uint8_t *buf, size_t len) {
-    if (offset >= size) {
-        return 0;
+static void set_from_inode(struct dnode *n, struct lw *l, uint32_t ino) {
+    struct ext4_inode_ref ref;
+    struct ext4_fs *fs = l->bdev.fs;
+    if (!fs || ext4_fs_get_inode_ref(fs, ino, &ref) != EOK) {
+        return;
     }
-    if (len > size - offset) {
-        len = (size_t)(size - offset);
+    uint32_t mode = ext4_inode_get_mode(&fs->sb, ref.inode);
+    n->v.mode = (mode & 07777) & (l->writable ? 07777 : 07555);
+    n->v.mtime = ext4_inode_get_modif_time(ref.inode);
+    n->v.ctime = ext4_inode_get_change_inode_time(ref.inode);
+    if (n->v.type == VNODE_FILE) {
+        n->v.size = ext4_inode_get_size(&fs->sb, ref.inode);
     }
-    if (en->flags & FL_INLINE_DATA) {
-        /* Small files live in i_block (the rest, past 60 bytes, in an xattr we don't read). */
-        size_t have = offset < 60 ? 60 - (size_t)offset : 0;
-        size_t n = len < have ? len : have;
-        memcpy(buf, en->iblock + offset, n);
-        memset(buf + n, 0, len - n);
+    ext4_fs_put_inode_ref(&ref);
+}
+
+static int lw_list(struct dnode *dir) {
+    struct lw *l = dir->m->fs;
+    static char path[PATH_MAX_LW];
+    path_of(dir, path, sizeof(path));
+    ext4_dir d;
+    int r = ext4_dir_open(&d, path);
+    if (r != EOK) {
+        return err_of(r);
+    }
+    const ext4_direntry *de;
+    while ((de = ext4_dir_entry_next(&d)) != NULL) {
+        char name[256];
+        memcpy(name, de->name, de->name_length);
+        name[de->name_length] = '\0';
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0 || !de->inode) {
+            continue;
+        }
+        bool dir_entry = de->inode_type == EXT4_DE_DIR;
+        bool symlink = de->inode_type == EXT4_DE_SYMLINK;
+        if (!dir_entry && !symlink && de->inode_type != EXT4_DE_REG_FILE) {
+            continue;   /* devices, pipes, sockets: not shown */
+        }
+        struct node *x = node_new();
+        struct dnode *n = diskfs_new(dir->m, name, dir_entry ? VNODE_DIR : VNODE_FILE, 0, x);
+        if (!n) {
+            kfree(x);
+            break;
+        }
+        if (x) {
+            x->symlink = symlink;
+        }
+        set_from_inode(n, l, de->inode);
+        diskfs_add(dir, n);
+    }
+    ext4_dir_close(&d);
+    return 0;
+}
+
+static int64_t lw_read(struct dnode *f, uint64_t offset, void *buf, size_t len) {
+    struct node *x = f->priv;
+    if (x && x->symlink) {
+        /* (A symbolic link shows as a small file holding where it points.) */
+        static char path[PATH_MAX_LW], target[PATH_MAX_LW];
+        size_t n = 0;
+        path_of(f, path, sizeof(path));
+        int r = ext4_readlink(path, target, sizeof(target), &n);
+        if (r != EOK) {
+            return err_of(r);
+        }
+        if (offset >= n) {
+            return 0;
+        }
+        len = len < n - offset ? len : n - offset;
+        memcpy(buf, target + offset, len);
         return (int64_t)len;
     }
+    ext4_file *h;
+    int err = handle(f, false, &h);
+    if (err) {
+        return err;
+    }
+    size_t got = 0;
+    int r = ext4_fseek(h, (int64_t)offset, SEEK_SET);
+    if (r == EOK) {
+        r = ext4_fread(h, buf, len, &got);
+    }
+    return r == EOK ? (int64_t)got : err_of(r);
+}
+
+static int64_t lw_write(struct dnode *f, uint64_t offset, const void *buf, size_t len) {
+    ext4_file *h;
+    int err = handle(f, true, &h);
+    if (err) {
+        return err;
+    }
     size_t done = 0;
-    while (done < len) {
-        uint64_t pos = offset + done;
-        uint64_t lblock = pos / e->block_size;
-        uint32_t within = (uint32_t)(pos % e->block_size);
-        uint64_t phys;
-        uint64_t run;   /* blocks from lblock on that are contiguous on disk */
-        bool zero;
-        if (en->flags & FL_EXTENTS) {
-            if (!(en->ext_len && lblock >= en->ext_first && lblock < en->ext_first + en->ext_len)) {
-                int err = find_extent(e, en, lblock);
-                if (err) {
-                    return err;
-                }
-            }
-            run = en->ext_first + en->ext_len - lblock;
-            zero = en->ext_zero;
-            phys = zero ? 0 : en->ext_start + (lblock - en->ext_first);
-        } else {
-            int err = map_indirect(e, en, lblock, &phys);
-            if (err) {
-                return err;
-            }
-            zero = phys == 0;
-            run = 1;
-        }
-        uint64_t span = run * e->block_size - within;
-        size_t n = len - done < span ? len - done : (size_t)span;
-        if (zero) {
-            memset(buf + done, 0, n);
-        } else {
-            if (phys + run > e->blocks) {
-                return -EIO;
-            }
-            int err = bio_read(e->dev, block_pos(e, phys) + within, buf + done, n);
-            if (err) {
-                return err;
-            }
-        }
-        done += n;
+    int r = ext4_fseek(h, (int64_t)offset, SEEK_SET);
+    if (r == EOK) {
+        r = ext4_fwrite(h, buf, len, &done);
     }
-    return (int64_t)done;
+    if (offset + done > f->v.size) {
+        f->v.size = offset + done;
+    }
+    f->v.mtime = rtc_time();
+    return r == EOK ? (int64_t)done : err_of(r);
 }
 
-/* --- nodes ------------------------------------------------------------------------------------------------- */
-
-static struct dnode *make_node(struct mount *m, struct ext4 *e, uint32_t ino, const char *name, int *err) {
-    uint8_t *raw = kmalloc(e->inode_size);
-    struct enode *en = kzalloc(sizeof(*en));
-    if (!raw || !en) {
-        kfree(raw);
-        kfree(en);
-        *err = -ENOMEM;
-        return NULL;
+static int lw_truncate(struct dnode *f, uint64_t size) {
+    ext4_file *h;
+    int err = handle(f, true, &h);
+    if (err) {
+        return err;
     }
-    *err = read_inode(e, ino, raw);
-    if (*err) {
-        kfree(raw);
-        kfree(en);
-        return NULL;
+    int r = ext4_ftruncate(h, size);
+    if (r == EOK) {
+        f->v.size = size;
+        f->v.mtime = rtc_time();
     }
-    uint16_t mode = get16(raw);
-    uint16_t type = mode & S_IFMT;
-    if (type != S_IFREG && type != S_IFDIR && type != S_IFLNK) {
-        kfree(raw);
-        kfree(en);
-        *err = 0;   /* not shown */
-        return NULL;
-    }
-    en->ino = ino;
-    en->flags = get32(raw + 32);
-    memcpy(en->iblock, raw + 40, 60);
-    uint64_t size = inode_size_of(raw);
-    struct dnode *n = diskfs_new(m, name, type == S_IFDIR ? VNODE_DIR : VNODE_FILE, size, en);
-    if (!n) {
-        kfree(raw);
-        kfree(en);
-        *err = -ENOMEM;
-        return NULL;
-    }
-    n->v.mode = mode & 0555;   /* (read-only: no write bits) */
-    n->v.mtime = get32(raw + 16);
-    n->v.ctime = e->inode_size > 128 && get16(raw + 128) >= 24 ? get32(raw + 0x90) : get32(raw + 12);
-    kfree(raw);
-    return n;
+    return err_of(r);
 }
 
-static int ext_list(struct dnode *dir) {
-    struct ext4 *e = E(dir);
-    struct enode *d = EN(dir);
-    uint64_t size = dir->v.size;
-    if (d->flags & FL_ENCRYPT) {
-        return 0;   /* names are encrypted: nothing we can show */
-    }
-    uint8_t raw[160];
-    if (!(d->flags & FL_INLINE_DATA)) {
-        /* (A directory's size is in i_size, like a file's.) */
-        uint8_t *ino_raw = kmalloc(e->inode_size);
-        if (ino_raw && read_inode(e, d->ino, ino_raw) == 0) {
-            size = inode_size_of(ino_raw);
-        }
-        kfree(ino_raw);
-    }
-    uint8_t *block = kmalloc(e->block_size);
-    if (!block) {
+static int lw_create(struct dnode *dir, struct dnode *node) {
+    static char path[PATH_MAX_LW];
+    child_path(dir, node->v.name, path, sizeof(path));
+    struct node *x = node_new();
+    if (!x) {
         return -ENOMEM;
     }
-    uint32_t bs = d->flags & FL_INLINE_DATA ? 60 : e->block_size;
-    int err = 0;
-    for (uint64_t at = 0; at < size && !err; at += bs) {
-        int64_t r;
-        if (d->flags & FL_INLINE_DATA) {
-            /* Inline folder: the parent's inode number (4 bytes), then entries. */
-            memcpy(raw, d->iblock, 60);
-            r = 60;
-        } else {
-            r = read_data(e, d, size, at, block, bs);
-        }
-        if (r < 0) {
-            err = (int)r;
-            break;
-        }
-        const uint8_t *b = d->flags & FL_INLINE_DATA ? raw : block;
-        uint32_t start = d->flags & FL_INLINE_DATA ? 4 : 0;
-        for (uint32_t off = start; off + 8 <= (uint32_t)r;) {
-            uint32_t ino = get32(b + off);
-            uint16_t rec_len = get16(b + off + 4);
-            uint8_t name_len = b[off + 6];
-            if (rec_len < 8 || off + rec_len > (uint32_t)r || 8u + name_len > rec_len) {
-                break;   /* damaged block: skip the rest of it */
-            }
-            if (ino && name_len && !(name_len == 1 && b[off + 8] == '.') &&
-                !(name_len == 2 && b[off + 8] == '.' && b[off + 9] == '.')) {
-                char name[VFS_NAME_MAX];
-                memcpy(name, b + off + 8, name_len);
-                name[name_len] = '\0';
-                int e2 = 0;
-                struct dnode *n = make_node(dir->m, e, ino, name, &e2);
-                if (n) {
-                    diskfs_add(dir, n);
-                } else if (e2) {
-                    err = e2;
-                    break;
-                }
-            }
-            off += rec_len;
-        }
-        if (d->flags & FL_INLINE_DATA) {
-            break;
-        }
+    int r;
+    if (node->v.type == VNODE_DIR) {
+        r = ext4_dir_mk(path);
+    } else {
+        r = ext4_fopen2(&x->file, path, O_RDWR | O_CREAT | O_TRUNC);
+        x->open = x->open_rw = r == EOK;
     }
-    kfree(block);
-    return err;
+    if (r != EOK) {
+        kfree(x);
+        return err_of(r);
+    }
+    node->priv = x;
+    uint64_t now = rtc_time();
+    ext4_mtime_set(path, (uint32_t)now);
+    ext4_ctime_set(path, (uint32_t)now);
+    node->v.mtime = node->v.ctime = now;
+    /* (lwext4 makes them 0777/0666: the usual 0755/0644, as a umask of 022 would.) */
+    node->v.mode = node->v.type == VNODE_DIR ? 0755 : 0644;
+    ext4_mode_set(path, node->v.mode);
+    return 0;
 }
 
-static int64_t ext_read(struct dnode *n, uint64_t offset, void *buf, size_t len) {
-    struct ext4 *e = E(n);
-    struct enode *en = EN(n);
-    if (en->flags & FL_ENCRYPT) {
-        return -EACCES;
+static void close_node(struct dnode *n) {
+    struct node *x = n->priv;
+    if (x && x->open) {
+        ext4_fclose(&x->file);
+        x->open = false;
     }
-    /* A short symbolic link keeps its target in i_block itself. */
-    if (n->v.size < 60 && !(en->flags & (FL_EXTENTS | FL_INLINE_DATA))) {
-        uint8_t *raw = kmalloc(e->inode_size);
-        bool link = raw && read_inode(e, en->ino, raw) == 0 && (get16(raw) & S_IFMT) == S_IFLNK &&
-                    get32(raw + 28) == 0;   /* no blocks: a fast link */
-        kfree(raw);
-        if (link) {
-            size_t have = offset < n->v.size ? (size_t)(n->v.size - offset) : 0;
-            size_t c = len < have ? len : have;
-            memcpy(buf, en->iblock + offset, c);
-            return (int64_t)c;
-        }
-    }
-    return read_data(e, en, n->v.size, offset, buf, len);
 }
 
-static void ext_release(struct dnode *n) {
+static int lw_unlink(struct dnode *dir, struct dnode *child) {
+    static char path[PATH_MAX_LW];
+    child_path(dir, child->v.name, path, sizeof(path));
+    close_node(child);
+    int r = child->v.type == VNODE_DIR ? ext4_dir_rm(path) : ext4_fremove(path);
+    return err_of(r);
+}
+
+static int lw_rename(struct dnode *dir, struct dnode *child, struct dnode *new_dir, const char *new_name) {
+    static char from[PATH_MAX_LW], to[PATH_MAX_LW];
+    child_path(dir, child->v.name, from, sizeof(from));
+    child_path(new_dir, new_name, to, sizeof(to));
+    close_node(child);   /* (reopened by its new path when needed) */
+    int r = child->v.type == VNODE_DIR ? ext4_dir_mv(from, to) : ext4_frename(from, to);
+    return err_of(r);
+}
+
+static int lw_set_mode(struct dnode *n, uint32_t mode) {
+    static char path[PATH_MAX_LW];
+    path_of(n, path, sizeof(path));
+    return err_of(ext4_mode_set(path, mode));
+}
+
+static void lw_release(struct dnode *n) {
+    close_node(n);
     kfree(n->priv);
+    n->priv = NULL;
 }
 
-static const struct diskfs_ops ext4_ops = {
-    .list = ext_list,
-    .read = ext_read,
-    .release = ext_release,
+static const struct diskfs_ops lw_ops = {
+    .list = lw_list,
+    .read = lw_read,
+    .write = lw_write,
+    .truncate = lw_truncate,
+    .create = lw_create,
+    .unlink = lw_unlink,
+    .rename = lw_rename,
+    .release = lw_release,
+    .set_mode = lw_set_mode,
 };
 
-/* --- mounting ------------------------------------------------------------------------------------------- */
+/* --- mounting ----------------------------------------------------------------------------------- */
 
-static bool power_of(uint32_t n, uint32_t base) {
-    while (n > 1 && n % base == 0) {
-        n /= base;
+static void lw_free(struct lw *l) {
+    mutex_lock(&slots_lock);
+    if (l->slot >= 0) {
+        slots[l->slot] = NULL;
     }
-    return n == 1;
+    mutex_unlock(&slots_lock);
+    kfree(l->sector);
+    kfree(l);
 }
 
-/* ext4_bg_has_super: with sparse_super, only groups 0, 1 and powers of 3, 5, 7 keep a superblock copy. */
-static bool has_super(struct ext4 *e, uint32_t g) {
-    if (!(e->ro_compat & RO_SPARSE_SUPER) || g <= 1) {
-        return true;
+static int lw_mount(struct mount *m) {
+    /* Not ext2/3/4: someone else's (quietly). */
+    uint8_t magic[2];
+    if (bio_read(m->dev, 1024 + 56, magic, 2) || magic[0] != 0x53 || magic[1] != 0xEF) {
+        return -EINVAL;
     }
-    return power_of(g, 3) || power_of(g, 5) || power_of(g, 7);
-}
-
-/* balloc.c descriptor_loc: where the block holding group g's descriptor is. */
-static uint64_t desc_block(struct ext4 *e, uint32_t g) {
-    uint32_t per = e->block_size / e->desc_size;
-    uint32_t meta = g / per;
-    if (!(e->incompat & INC_META_BG) || meta < e->first_meta_bg) {
-        return e->first_data_block + 1 + meta;
-    }
-    uint32_t first = meta * per;
-    return e->first_data_block + (uint64_t)first * e->blocks_per_group + (has_super(e, first) ? 1 : 0);
-}
-
-static int ext_mount(struct mount *m) {
-    uint8_t *sb = kmalloc(1024);
-    if (!sb) {
+    struct lw *l = kzalloc(sizeof(*l));
+    if (!l) {
         return -ENOMEM;
     }
-    int err = bio_read(m->dev, 1024, sb, 1024);
-    if (err || get16(sb + 56) != MAGIC) {
-        kfree(sb);
-        return err ? err : -EINVAL;
+    l->slot = -1;
+    mutex_lock(&slots_lock);
+    for (int i = 0; i < SLOTS && l->slot < 0; i++) {
+        if (!slots[i]) {
+            slots[i] = l;
+            l->slot = i;
+        }
     }
-    struct ext4 *e = kzalloc(sizeof(*e));
-    if (!e) {
-        kfree(sb);
+    mutex_unlock(&slots_lock);
+    l->dev = m->dev;
+    l->sector = kmalloc(m->dev->sector_size);
+    if (l->slot < 0 || !l->sector) {
+        lw_free(l);
         return -ENOMEM;
     }
-    e->m = m;
-    e->dev = m->dev;
-    uint32_t log = get32(sb + 24);
-    e->block_size = log <= 6 ? 1024u << log : 0;
-    e->incompat = get32(sb + 96);
-    e->ro_compat = get32(sb + 100);
-    e->first_data_block = get32(sb + 20);
-    e->blocks_per_group = get32(sb + 32);
-    e->inodes_per_group = get32(sb + 40);
-    e->inode_size = get32(sb + 76) >= 1 ? get16(sb + 88) : 128;   /* rev 0 has 128-byte inodes */
-    e->desc_size = (e->incompat & INC_64BIT) && get16(sb + 0xFE) >= 64 ? get16(sb + 0xFE) : 32;
-    e->first_meta_bg = get32(sb + 0x104);
-    e->blocks = get32(sb + 4) | ((e->incompat & INC_64BIT) ? (uint64_t)get32(sb + 0x150) << 32 : 0);
-    e->free_blocks = get32(sb + 12) | ((e->incompat & INC_64BIT) ? (uint64_t)get32(sb + 0x158) << 32 : 0);
-    bool has_journal = get32(sb + 92) & 0x0004;   /* COMPAT_HAS_JOURNAL */
-    const uint8_t *u = sb + 0x68;
+    ksnprintf(l->name, sizeof(l->name), "vos%d", l->slot);
+    ksnprintf(l->mp, sizeof(l->mp), "/vos%d/", l->slot);
+    l->iface.open = bd_open;
+    l->iface.bread = bd_read;
+    l->iface.bwrite = bd_write;
+    l->iface.close = bd_close;
+    l->iface.ph_bsize = m->dev->sector_size;
+    l->iface.ph_bcnt = m->dev->sectors;
+    l->iface.ph_bbuf = l->sector;
+    l->iface.p_user = l;
+    l->bdev.bdif = &l->iface;
+    l->bdev.part_offset = 0;
+    l->bdev.part_size = m->dev->sectors * m->dev->sector_size;
+
+    mutex_lock(&slots_lock);
+    int r = ext4_device_register(&l->bdev, l->name);
+    if (r == EOK) {
+        r = ext4_mount(l->name, l->mp, true);
+        if (r != EOK) {
+            ext4_device_unregister(l->name);
+        }
+    }
+    mutex_unlock(&slots_lock);
+    if (r != EOK) {
+        kprintf("       Disk: %s: ext4 features lwext4 doesn't handle (%d); trying the read-only driver\n",
+                m->dev->name, r);
+        lw_free(l);
+        return -EINVAL;   /* (the next driver, ext4_ro, gets a go) */
+    }
+
+    struct ext4_sblock *sb = &l->bdev.fs->sb;
+    const uint8_t *u = sb->uuid;
     ksnprintf(m->uuid, sizeof(m->uuid), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", u[0],
               u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
     char label[17];
-    memcpy(label, sb + 120, 16);
+    memcpy(label, sb->volume_name, 16);
     label[16] = '\0';
-    kfree(sb);
-
-    if (!e->block_size || !e->blocks_per_group || !e->inodes_per_group || e->inode_size < 128 ||
-        e->inode_size > e->block_size || (e->inode_size & (e->inode_size - 1))) {
-        kfree(e);
-        return -EINVAL;
-    }
-    if (e->incompat & ~INC_KNOWN) {
-        kprintf("[WARN] ext4: %s uses features this reader doesn't know (%x)\n", m->dev->name,
-                e->incompat & ~INC_KNOWN);
-        kfree(e);
-        return -ENOSYS;
-    }
-    if (e->incompat & INC_RECOVER) {
-        kprintf("[WARN] ext4: %s wasn't unmounted cleanly; the newest changes may be missing\n", m->dev->name);
-    }
-    if (e->blocks * e->block_size > m->dev->sectors * m->dev->sector_size) {
-        kfree(e);
-        return -EINVAL;
-    }
-    e->groups = (uint32_t)((e->blocks - e->first_data_block + e->blocks_per_group - 1) / e->blocks_per_group);
-    e->inode_tables = kmalloc((size_t)e->groups * sizeof(uint64_t));
-    if (!e->inode_tables) {
-        kfree(e);
-        return -ENOMEM;
-    }
-    for (uint32_t g = 0; g < e->groups; g++) {
-        uint32_t per = e->block_size / e->desc_size;
-        uint8_t d[64];
-        err = bio_read(m->dev, block_pos(e, desc_block(e, g)) + (uint64_t)(g % per) * e->desc_size, d, e->desc_size);
-        if (err) {
-            kfree(e->inode_tables);
-            kfree(e);
-            return err;
-        }
-        e->inode_tables[g] = get32(d + 8) | (e->desc_size >= 64 ? (uint64_t)get32(d + 0x28) << 32 : 0);
-    }
-
-    m->fs = e;
-    m->ops = &ext4_ops;
-    m->read_only = true;
-    strlcpy(m->fs_name, e->incompat & INC_EXTENTS ? "ext4" : has_journal ? "ext3" : "ext2", sizeof(m->fs_name));
     for (int i = 0; label[i]; i++) {
         if ((unsigned char)label[i] < 0x20) {
             label[i] = '_';
         }
     }
     strlcpy(m->label, label, sizeof(m->label));
-    int e2 = 0;
-    m->root = make_node(m, e, ROOT_INO, "", &e2);
-    if (!m->root || m->root->v.type != VNODE_DIR) {
-        kfree(e->inode_tables);
-        kfree(e);
+    uint32_t incompat = ext4_get32(sb, features_incompatible);
+    l->journal = ext4_get32(sb, features_compatible) & EXT4_FCOM_HAS_JOURNAL;
+    strlcpy(m->fs_name, incompat & EXT4_FINCOM_EXTENTS ? "ext4" : l->journal ? "ext3" : "ext2", sizeof(m->fs_name));
+    m->fs = l;
+    m->ops = &lw_ops;
+    m->read_only = true;
+    m->root = diskfs_new(m, "", VNODE_DIR, 0, NULL);
+    if (!m->root) {
+        mutex_lock(&slots_lock);
+        ext4_umount(l->mp);
+        ext4_device_unregister(l->name);
+        mutex_unlock(&slots_lock);
+        lw_free(l);
         m->fs = NULL;
-        return e2 ? e2 : -EIO;
+        return -ENOMEM;
     }
+    set_from_inode(m->root, l, EXT4_INODE_ROOT_INDEX);
     return 0;
 }
 
-static void ext_unmount(struct mount *m) {
-    struct ext4 *e = m->fs;
-    kfree(e->inode_tables);
-    kfree(e);
+static int lw_make_writable(struct mount *m) {
+    struct lw *l = m->fs;
+    if (l->writable) {
+        return 0;
+    }
+    mutex_lock(&slots_lock);
+    int r = ext4_umount(l->mp);
+    if (r == EOK) {
+        r = ext4_mount(l->name, l->mp, false);
+    }
+    if (r == EOK && l->journal) {
+        r = ext4_recover(l->mp);   /* (a journal left with changes in it: they go in first) */
+        if (r == EOK || r == ENOTSUP) {
+            r = ext4_journal_start(l->mp);
+        }
+    }
+    if (r != EOK) {
+        ext4_umount(l->mp);
+        int back = ext4_mount(l->name, l->mp, true);   /* read-only again, as it was */
+        (void)back;
+    }
+    mutex_unlock(&slots_lock);
+    if (r != EOK) {
+        return err_of(r);
+    }
+    ext4_cache_write_back(l->mp, true);   /* (flushed by lw_sync: after every change, and twice a second) */
+    l->writable = true;
+    m->read_only = false;
+    m->journaled = l->journal;
+    /* The nodes made so far were read-only: let them be written. */
+    m->root->v.mode |= 0200;
+    return 0;
+}
+
+static void lw_unmount(struct mount *m) {
+    struct lw *l = m->fs;
+    if (!l) {
+        return;
+    }
+    mutex_lock(&slots_lock);
+    if (l->writable) {
+        ext4_cache_write_back(l->mp, false);   /* (writes out what's cached) */
+    }
+    if (l->writable && l->journal) {
+        ext4_journal_stop(l->mp);
+    }
+    ext4_umount(l->mp);
+    ext4_device_unregister(l->name);
+    mutex_unlock(&slots_lock);
+    lw_free(l);
     m->fs = NULL;
 }
 
-static int ext_statfs(struct mount *m, uint64_t *total, uint64_t *free) {
-    struct ext4 *e = m->fs;
-    *total = e->blocks * e->block_size;
-    *free = e->free_blocks * e->block_size;
+static int lw_statfs(struct mount *m, uint64_t *total, uint64_t *free) {
+    struct lw *l = m->fs;
+    struct ext4_mount_stats s;
+    if (ext4_mount_point_stats(l->mp, &s) != EOK) {
+        return -EIO;
+    }
+    *total = s.blocks_count * s.block_size;
+    *free = s.free_blocks_count * s.block_size;
     return 0;
+}
+
+static int lw_sync(struct mount *m) {
+    struct lw *l = m->fs;
+    return l->writable ? err_of(ext4_cache_flush(l->mp)) : 0;
 }
 
 const struct fs_driver ext4_driver = {
     .name = "ext4",
-    .mount = ext_mount,
-    .unmount = ext_unmount,
-    .statfs = ext_statfs,
+    .mount = lw_mount,
+    .unmount = lw_unmount,
+    .statfs = lw_statfs,
+    .sync = lw_sync,
+    .make_writable = lw_make_writable,
 };

@@ -1,6 +1,6 @@
 /*
  * The program side of userfs (SYS_USERFS in <viralos.h>), shared by the read-write filesystem
- * servers (ext4d, ntfsd): they open their filesystem, fill in a struct os_userfs, and hand their
+ * servers (ntfsd): they open their filesystem, fill in a struct os_userfs, and hand their
  * operations to ufs_serve(), which mounts it and answers the kernel's requests until it's unmounted.
  *
  * These are Linux (musl) programs: the system calls here go through OS_LINUX_NATIVE_BASE.

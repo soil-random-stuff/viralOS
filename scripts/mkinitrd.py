@@ -33,6 +33,7 @@ SYSTEM_DIRS = [
     "etc/dde",
     "home",                     # the users' files
     "media",                    # mount points for USB sticks and other drives
+    "mnt",                      # mounted by hand (the installer: /mnt/target)
     "root",                     # root's home
     "run",                      # what programs keep while running (sudo's timestamps)
     "tmp",                      # scratch space

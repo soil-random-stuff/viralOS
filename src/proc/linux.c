@@ -108,7 +108,10 @@ int linux_setup_stack(struct process *p, int argc, char **argv, const struct elf
     ksnprintf(home, sizeof(home), "HOME=" _PATH_HOME "/%s", p->user[0] ? p->user : "user");
     const char *const env[] = { "PATH=" _PATH_BIN, home, "TERM=dumb", "LANG=C.UTF-8" };
     enum { ENVC = sizeof(env) / sizeof(env[0]) };
-    uint64_t sp = USER_STACK_TOP;
+    /* Like Linux, the strings don't end right at the top: some programs read a little past the end of
+       an argument (limine's memcmp(arg, "--uninstall-data-file=", 22) on a shorter one), which is
+       harmless on Linux, where the program's path and a zero word sit above them. */
+    uint64_t sp = USER_STACK_TOP - 256;
     uint64_t argp[PROCESS_MAX_ARGS], envp[ENVC];
     for (int i = argc - 1; i >= 0 && !err; i--) {
         err = push(p, &sp, argv[i], strlen(argv[i]) + 1);

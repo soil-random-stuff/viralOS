@@ -353,6 +353,8 @@ static int64_t sys_pty_open(struct process *p, uint64_t ufds) {
     return copy_to_user(p->space, ufds, fds, sizeof(fds)) ? 0 : -EFAULT;
 }
 
+extern uint32_t boot_firmware;   /* (kernel.c) */
+
 static int64_t sys_sysinfo(struct process *p, uint64_t uinfo) {
     struct heap_stats hs;
     heap_get_stats(&hs);
@@ -364,6 +366,7 @@ static int64_t sys_sysinfo(struct process *p, uint64_t uinfo) {
         .processes = process_count(),
         .cpus = smp_cpu_count(),
         .idle_ms = sched_idle_ms(),
+        .firmware = boot_firmware,
     };
     return copy_to_user(p->space, uinfo, &info, sizeof(info)) ? 0 : -EFAULT;
 }
@@ -371,8 +374,17 @@ static int64_t sys_sysinfo(struct process *p, uint64_t uinfo) {
 /* --- drives -------------------------------------------------------------------------------------- */
 
 static int64_t sys_drives(struct process *p, uint64_t index, uint64_t uinfo) {
-    struct mount *m = mount_at((int)index);
-    if (!m || index > 1000) {
+    if (index > 1000) {
+        return -ENOENT;
+    }
+    /* (Not the installed system's own disk: it's /, not a drive to open or eject.) */
+    struct mount *m = NULL;
+    for (int i = 0, seen = 0; (m = mount_at(i)) != NULL; i++) {
+        if (!m->is_root && seen++ == (int)index) {
+            break;
+        }
+    }
+    if (!m) {
         return -ENOENT;
     }
     static struct os_drive_info info;   /* (big: not on the stack) */
@@ -384,6 +396,7 @@ static int64_t sys_drives(struct process *p, uint64_t index, uint64_t uinfo) {
     strlcpy(info.filesystem, m->fs_name, sizeof(info.filesystem));
     strlcpy(info.device, m->dev->name, sizeof(info.device));
     strlcpy(info.model, m->dev->model, sizeof(info.model));
+    strlcpy(info.uuid, m->uuid, sizeof(info.uuid));
     mutex_lock(&m->sb.lock);
     if (!m->dead) {
         m->driver->statfs(m, &info.total, &info.free);
@@ -449,7 +462,7 @@ static int64_t sys_blockdev(struct process *p, uint64_t index, uint64_t uinfo) {
     return ok ? 0 : -EFAULT;
 }
 
-static int64_t sys_mount(struct process *p, uint64_t uname, uint64_t upath) {
+static int64_t sys_mount(struct process *p, uint64_t uname, uint64_t upath, uint64_t flags) {
     char name[VFS_PATH_MAX], path[VFS_PATH_MAX] = "";
     int64_t err = copy_path(p, uname, name);
     if (!err && upath) {
@@ -459,7 +472,13 @@ static int64_t sys_mount(struct process *p, uint64_t uname, uint64_t upath) {
         return err;
     }
     struct block_device *d = block_find(name);
-    return d ? mount_device(d, path[0] ? path : NULL) : -ENODEV;
+    return d ? mount_device(d, path[0] ? path : NULL, flags & OS_MOUNT_WRITABLE) : -ENODEV;
+}
+
+static int64_t sys_chmod(struct process *p, uint64_t upath, uint64_t mode) {
+    char path[VFS_PATH_MAX];
+    int64_t err = copy_path(p, upath, path);
+    return err ? err : vfs_chmod(p->cwd, path, (uint32_t)mode);
 }
 
 static int64_t sys_unmount(struct process *p, uint64_t upath) {
@@ -808,7 +827,7 @@ void syscall_dispatch(struct interrupt_frame *f) {
     case SYS_SEEK:            ret = sys_seek(p, a1, (int64_t)a2, a3); break;
     case SYS_FSYNC:           ret = sys_fsync(p, a1); break;
     case SYS_BLOCKDEV:        ret = sys_blockdev(p, a1, a2); break;
-    case SYS_MOUNT:           ret = sys_mount(p, a1, a2); break;
+    case SYS_MOUNT:           ret = sys_mount(p, a1, a2, a3); break;
     case SYS_UNMOUNT:         ret = sys_unmount(p, a1); break;
     case SYS_RESCAN:          ret = sys_rescan(p, a1); break;
     case SYS_USERFS:          ret = sys_userfs(p, a1); break;
@@ -829,6 +848,7 @@ void syscall_dispatch(struct interrupt_frame *f) {
     case SYS_INTERRUPT:       ret = process_interrupt_mode(p, (int)a1); break;
     case SYS_UPTIME_US:       ret = (int64_t)uptime_us(); break;
     case SYS_USER:            ret = sys_user(p, a1, a2); break;
+    case SYS_CHMOD:           ret = sys_chmod(p, a1, a2); break;
     default:          ret = -ENOSYS; break;
     }
     f->rax = (uint64_t)ret;

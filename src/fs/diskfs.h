@@ -43,6 +43,8 @@ struct diskfs_ops {
     int (*rename)(struct dnode *dir, struct dnode *child, struct dnode *new_dir, const char *new_name);
     /* Free node->priv (the dnode itself is freed by diskfs). */
     void (*release)(struct dnode *n);
+    /* Store new permission bits on disk; NULL: the filesystem has none (only kept in memory). */
+    int (*set_mode)(struct dnode *n, uint32_t mode);
 };
 
 /* A new node for `m` (not in any folder yet). Folders get 0755, files 0644 (no write bits if read-only). */

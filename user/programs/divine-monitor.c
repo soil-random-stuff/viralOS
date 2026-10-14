@@ -166,7 +166,6 @@ static const struct { const char *program, *name, *icon; } system_programs[] = {
     { "shell", "Shell", _PATH_DDE_RES "/Icons/Apps/Terminal.png" },
     { "playsound", "Sound player", _PATH_DDE_RES "/Icons/Status/VolumeHigh.png" },
     { "ntfsd", "NTFS drive server", _PATH_DDE_RES "/Icons/FilesFolders/ExternalStorage.png" },
-    { "ext4d", "ext4 drive server", _PATH_DDE_RES "/Icons/FilesFolders/ExternalStorage.png" },
 };
 
 static void load_system_programs(void) {

@@ -59,6 +59,10 @@ int fsync(int fd);
 int blockdev(int index, struct os_block_info *info);
 /* Mount /dev/<device> at `path` (NULL: where it would go by itself); unmount one filesystem. */
 int mount_device(const char *device, const char *path);
+/* The same, read-write even where a disk would come up read-only (another system's ext4). */
+int mount_device_writable(const char *device, const char *path);
+/* A file's or folder's permission bits (07777). */
+int chmod(const char *path, uint32_t mode);
 int unmount(const char *path);
 /* Unmount every mounted drive (before shutting down). Returns how many couldn't be; `failed` (may be
    NULL) gets them as "/media/STICK (in use), ...". */

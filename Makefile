@@ -64,6 +64,16 @@ build/obj/%.c.o: src/%.c limine-protocol/include/limine.h
 build/obj/net/%.c.o: CPPFLAGS += -Isrc/net/port -Isrc/net/port/libc -Isrc/net/lwip/include
 build/obj/net/lwip/%.c.o: CFLAGS += -Wno-unused-parameter -Wno-sign-compare -Wno-address
 
+# lwext4 (src/fs/ext4/lwext4, unchanged), the read-write ext4 driver's engine: its libc is in
+# src/fs/ext4/port, its settings here (its own errno and open flags, no debug output, 8 filesystems
+# at once). Only fs/ext4/ sees its headers.
+LWEXT4_CONFIG := -DCONFIG_USE_DEFAULT_CFG=1 -DCONFIG_HAVE_OWN_ERRNO=1 -DCONFIG_HAVE_OWN_OFLAGS=1 \
+	-DCONFIG_HAVE_OWN_ASSERT=1 -DCONFIG_DEBUG_PRINTF=0 -DCONFIG_DEBUG_ASSERT=0 -DCONFIG_BLOCK_DEV_ENABLE_STATS=0 \
+	-DCONFIG_BLOCK_DEV_CACHE_SIZE=256 -DCONFIG_EXT4_BLOCKDEVS_COUNT=8 -DCONFIG_EXT4_MOUNTPOINTS_COUNT=8
+build/obj/fs/ext4/%.c.o: CPPFLAGS += -Isrc/fs/ext4/port/libc -Isrc/fs/ext4/lwext4/include -Isrc/fs/ext4 $(LWEXT4_CONFIG)
+build/obj/fs/ext4/lwext4/%.c.o: CFLAGS += -Wno-unused-parameter -Wno-sign-compare -Wno-unused-function \
+	-Wno-unused-variable -Wno-implicit-fallthrough -Wno-unused-but-set-variable
+
 build/obj/%.S.o: src/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
@@ -190,10 +200,15 @@ build/rootfs.stamp: FORCE
 # building them takes a while. They run through the kernel's Linux layer (src/proc/linux.c).
 PORT_BINS := $(wildcard ports/bin/*)
 
-$(INITRD): build/rootfs.stamp $(USER_BINS) $(USER_SOS) $(PORT_BINS) scripts/mkinitrd.py
+# /boot has what the installer puts on a disk to start it: the kernel and Limine's BIOS and UEFI parts.
+BOOT_FILES := $(KERNEL) limine/limine-bios.sys limine/BOOTX64.EFI
+
+$(INITRD): build/rootfs.stamp $(USER_BINS) $(USER_SOS) $(PORT_BINS) $(BOOT_FILES) scripts/mkinitrd.py
 	@mkdir -p build
 	python3 scripts/mkinitrd.py $@ rootfs=/ resources=/usr/share/dde-res ports/bin=/usr/bin \
-		build/user/bin=/usr/bin $(LIBDIR)=/usr/lib --sysroot build/sysroot
+		build/user/bin=/usr/bin $(LIBDIR)=/usr/lib $(KERNEL)=/boot/kernel.elf \
+		limine/limine-bios.sys=/boot/limine/limine-bios.sys limine/BOOTX64.EFI=/boot/limine/BOOTX64.EFI \
+		--sysroot build/sysroot
 
 # --- bootable ISO (BIOS + UEFI) ---------------------------------------------
 

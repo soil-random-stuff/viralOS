@@ -492,6 +492,10 @@ static void hash_password(const char *password, char *out, size_t size) {
     snprintf(out, size, "pbkdf2-sha256$%d$%s$%s", ITERATIONS, salt_hex, key_hex);
 }
 
+void users_hash_password(const char *password, char *out, size_t size) {
+    hash_password(password, out, size);
+}
+
 bool users_has_password(const struct user_account *a) {
     return a->password[0] != '\0';
 }

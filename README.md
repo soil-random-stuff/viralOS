@@ -17,7 +17,7 @@ real PCs (BIOS and UEFI) and in QEMU.
 - **Memory:** physical page allocator, own page tables with W^X, guarded kernel stacks, kernel heap, shared memory
 - **Processes:** ring 3 programs in their own address spaces, ELF loader, shared libraries linked by a dynamic linker in the kernel, 69 system calls, IPC channels and named services, TTYs with Ctrl+C
 - **Linux compatibility layer:** runs unmodified static (musl) Linux programs: e2fsprogs, ntfsprogs-plus, dosfstools, exfatprogs and parted's fatresize run as-is
-- **Filesystems:** FAT12/16/32, exFAT, ext4 and NTFS, with read-write NTFS and ext4 through user-space servers; a VFS with a RAM root, `/dev`, automounting and `/etc/fstab`
+- **Filesystems:** FAT12/16/32, exFAT, ext4 and NTFS; ext4 read-write in the kernel (lwext4, with the journal), read-write NTFS through a user-space server; a VFS with a RAM root, `/dev`, automounting and `/etc/fstab`
 - **Storage:** NVMe, SATA (AHCI), USB 3 (xHCI) mass storage with hot-plug
 - **Input:** PS/2 and USB keyboards and mice
 - **Sound:** Intel HD Audio
@@ -36,7 +36,15 @@ real PCs (BIOS and UEFI) and in QEMU.
 - Login and lock screen, several accounts, per-user settings and wallpapers
 - A dock-style panel, a scrollable apps menu, network and volume flyouts, desktop icons with drag and drop, system sounds
 - Shutting down closes the apps and unmounts the drives first, and warns when it can't
+- **An installer:** language, license, the disk, your account; it sets the disk up to start the way
+  the PC does (UEFI: GPT and an EFI System Partition; BIOS: MBR and Limine's boot code): a small FAT32
+  boot partition and the system on ext4, mounted as `/` with its permissions and journal
 - **Apps:** Files, Terminal, Text Editor, Music, Photos, Disks (partition, format, resize, mount), Settings, Snipping Tool (Print Screen), System Monitor, Calculator
+
+## Installing
+
+Boot the ISO (from a USB stick, a DVD or a virtual machine) and open **Install viralOS** on the
+desktop. Installing erases the disk you choose, so trying it in a virtual machine first is a good idea.
 
 ## Building
 
@@ -61,7 +69,7 @@ saves screenshots in `build/`).
 | `abi/` | what the kernel and programs share: system calls (`viralos.h`), paths (`paths.h`) |
 | `resources/` | the desktop's fonts, icons, cursors, sounds and wallpapers (`/usr/share/dde-res`) |
 | `rootfs/` | the rest of the root filesystem: `/etc`, `/home`, the app launchers |
-| `ports/` | the read-write NTFS and ext4 servers; the ported tools are built into `ports/bin` |
+| `ports/` | the read-write NTFS server; the ported tools are built into `ports/bin` |
 | `scripts/` | the build and test scripts |
 
 ## Credits
@@ -82,6 +90,8 @@ Built with [Claude Code](https://claude.com/claude-code).
 
 ## License
 
-viralOS's own code is under the [MIT License](LICENSE). The third-party parts keep their own licenses:
-lwIP (BSD), the vendored audio and image libraries (public domain / MIT), the fonts (DejaVu, SIL OFL),
-and the ported tools, which are GPL and are downloaded and built from their upstream sources.
+viralOS is under the [GNU General Public License, version 2](LICENSE) (parts of it are ported from
+Linux, which is GPL v2). The third-party parts keep their own licenses, all compatible with it: lwIP
+(BSD), lwext4 in `src/fs/ext4/lwext4` (BSD; `ext4_extent.c` and `ext4_xattr.c` GPL v2 or later), the
+vendored audio and image libraries (public domain / MIT), the fonts (DejaVu, SIL OFL), and the ported
+tools, which are GPL and are downloaded and built from their upstream sources.
