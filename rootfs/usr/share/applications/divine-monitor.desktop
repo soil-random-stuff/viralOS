@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=System Monitor
+Comment=See what is running and how busy the computer is.
+Icon=/usr/share/dde-res/Icons/Apps/SystemMonitor.png
+Exec=/usr/bin/divine-monitor

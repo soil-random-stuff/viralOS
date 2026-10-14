@@ -1,0 +1,49 @@
+viralOS root filesystem
+=========================
+
+The build assembles this tree from several places in the source code and
+packs it into a tar archive (initrd.tar); the bootloader loads that into
+memory and the kernel unpacks it into a RAM filesystem (ramfs) at boot.
+
+  rootfs/            hand-written files: /etc, /home, the app launchers, this README
+  resources/         the desktop's fonts, icons, sounds...  -> /usr/share/dde-res
+  user/programs/     C sources, compiled into /usr/bin
+  abi/paths.h        where everything is (the kernel and programs use it)
+  scripts/mkinitrd.py  the folder layout and permission rules
+
+Layout (the usual Unix one; names are case-sensitive)
+  /dev            disks and partitions ("usb0", "usb0p1"), null, log
+  /etc            system settings
+                    hostname    the machine's name (shown in the shell prompt)
+                    init        the first program to start (the login screen)
+                    motd        the message printed after boot
+                    os-release  the system's name and version
+                    passwd      the accounts: name:x:uid:gid:Display Name:home:shell
+                    shadow      their password hashes (PBKDF2-SHA256), "" for none
+                    group       a group for each account
+                    fstab       where drives get mounted (Disks > Edit Mount Options)
+                    network.conf  network adapters' settings (netctl, Settings > Network)
+                    dde/settings.conf  the desktop's default settings
+  /home/NAME      each user's files: Desktop, Documents, Downloads, Music, Pictures, and
+                  .config/dde/ (their own desktop settings: wallpaper, pinned apps, picture...)
+  /media          where USB sticks and other drives get mounted
+  /root           root's home (root can't log in)
+  /tmp            scratch space
+  /usr/bin        programs (one per user/programs/*.c or folder, and the ported Linux tools)
+  /usr/lib        shared libraries (lib*.so) the programs use
+  /usr/share/applications  app launchers, one .desktop file per app:
+                    [Desktop Entry]
+                    Type=Application
+                    Name=File Manager
+                    Comment=Manage files on your computer.
+                    Icon=/usr/share/dde-res/Icons/Apps/Files.png
+                    Exec=/usr/bin/divine-files
+  /usr/share/dde-res  DDE's look and feel
+                    Backgrounds/  wallpapers; default.png is the default
+                    Cursors/      mouse pointers
+                    Fonts/        TrueType fonts (DejaVu Sans, Bold, Mono)
+                    Icons/        Apps/ (AppsMenu.png: the panel's apps button), Dialogs/,
+                                  FilesFolders/ (files, folders, drives), Misc/, Settings/, Status/
+                    Sounds/       system sounds
+
+Everything is writable, but nothing is saved back to the ISO.

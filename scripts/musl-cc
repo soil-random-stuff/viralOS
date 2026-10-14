@@ -1,0 +1,19 @@
+#!/bin/bash
+# gcc for Linux programs that run on viralOS: static, non-PIE, against musl.
+# musl comes from Ubuntu's musl/musl-dev packages unpacked into ~/fstools/root (apt download +
+# dpkg -x, no root needed); their musl-gcc.specs has /usr paths, so a copy with ours is made.
+# Mark the result with scripts/mark_linux.py so the kernel runs it as a Linux program.
+M=$HOME/fstools/root/usr
+SPECS=$HOME/fstools/musl-gcc.specs
+# Linux's own headers (linux/fs.h, asm/...), from Ubuntu's linux-libc-dev unpacked into ~/fstools/kh.
+KH=$HOME/fstools/kh/usr/include
+set -- -idirafter "$KH" -idirafter "$KH/x86_64-linux-gnu" "$@"
+if [ ! -f "$SPECS" ] || [ "$M/lib/x86_64-linux-musl/musl-gcc.specs" -nt "$SPECS" ]; then
+    sed "s|/usr/|$M/|g" "$M/lib/x86_64-linux-musl/musl-gcc.specs" > "$SPECS"
+fi
+for arg in "$@"; do
+    if [ "$arg" = "-c" ] || [ "$arg" = "-E" ] || [ "$arg" = "-S" ] || [ "$arg" = "-M" ] || [ "$arg" = "-MM" ]; then
+        exec gcc -specs "$SPECS" -fno-stack-protector "$@"
+    fi
+done
+exec gcc -specs "$SPECS" -fno-stack-protector -static -no-pie "$@"

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Type commands into the shell.
+Icon=/usr/share/dde-res/Icons/Apps/Terminal.png
+Exec=/usr/bin/divine-terminal

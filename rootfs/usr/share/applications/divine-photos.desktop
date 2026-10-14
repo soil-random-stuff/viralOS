@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Photos
+Comment=Look at your pictures.
+Icon=/usr/share/dde-res/Icons/Apps/Photos.png
+Exec=/usr/bin/divine-photos

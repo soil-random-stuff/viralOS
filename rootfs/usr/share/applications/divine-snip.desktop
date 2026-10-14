@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Snipping Tool
+Comment=Take a picture of the screen, or of part of it.
+Icon=/usr/share/dde-res/Icons/Apps/SnipTool.png
+Exec=/usr/bin/divine-snip

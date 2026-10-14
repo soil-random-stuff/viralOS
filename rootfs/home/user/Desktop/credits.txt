@@ -1,0 +1,10 @@
+Limine: bootloader
+lwIP: TCP/IP stack
+Linux kernel: the xHCI, USB, AHCI, NVMe, HD Audio, Intel e1000/e1000e, Realtek r8169 and filesystem drivers were ported from or written after its sources
+minimp3 (lieff), stb_vorbis (Sean Barrett), dr_flac / dr_wav (David Reid): audio decoding
+stb_image_write (Sean Barrett): PNG saving
+e2fsprogs, ntfsprogs-plus, dosfstools, exfatprogs, GNU parted / fatresize: disk tools, running through the Linux compatibility layer, built with musl libc
+DejaVu fonts, Terminus console font
+Icons8: icons (icons8.com)
+Syn Cole – Feel Good [NCS Release]: the sample song i used for testing
+Wallpapers: probably the only thing i made lol

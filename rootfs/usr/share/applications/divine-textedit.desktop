@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Text Editor
+Comment=Write and edit text files.
+Icon=/usr/share/dde-res/Icons/Apps/TextEditor.png
+Exec=/usr/bin/divine-textedit

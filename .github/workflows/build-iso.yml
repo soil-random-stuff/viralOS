@@ -1,0 +1,55 @@
+# Builds the bootable ISO on every push and pull request (and by hand from the Actions tab), and
+# keeps it as a workflow artifact: open the run, then "viralos-iso" under Artifacts.
+name: Build ISO
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential python3 xorriso git curl \
+            xz-utils pkg-config
+
+      # The ported Linux disk tools (mkfs, e2fsck, ntfsd...) take the longest: keep their sources,
+      # musl and the build between runs while scripts/fetch_ports.sh and build_ports.sh don't change.
+      - name: Cache the ported tools
+        id: ports-cache
+        uses: actions/cache@v4
+        with:
+          path: ports/bin
+          key: ports-${{ runner.os }}-${{ hashFiles('scripts/fetch_ports.sh', 'scripts/build_ports.sh', 'scripts/musl-cc', 'scripts/mark_linux.py', 'ports/src/**') }}
+
+      - name: Download the ported tools' sources and musl
+        if: steps.ports-cache.outputs.cache-hit != 'true'
+        env:
+          PORTS_SRC: ${{ runner.temp }}/ports-src
+        run: bash scripts/fetch_ports.sh
+
+      - name: Build the ported tools
+        if: steps.ports-cache.outputs.cache-hit != 'true'
+        env:
+          PORTS_SRC: ${{ runner.temp }}/ports-src
+        run: bash scripts/build_ports.sh
+
+      - name: Download Limine
+        run: make limine/limine-bios.sys limine-protocol/include/limine.h
+
+      - name: Build viralOS
+        run: ./build.sh --no-ports
+
+      - name: Upload the ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: viralos-iso
+          path: viralos.iso
+          if-no-files-found: error

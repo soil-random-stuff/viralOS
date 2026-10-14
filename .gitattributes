@@ -1,0 +1,7 @@
+# Text files are stored and checked out with LF line endings (the build runs on Linux).
+* text=auto eol=lf
+*.png binary
+*.ogg binary
+*.mp3 binary
+*.ttf binary
+*.psf binary

@@ -1,0 +1,25 @@
+# Everything make produces (kernel, programs, libraries, initrd, logs, test disk images)
+/build/
+/viralos.iso
+
+# Ported tools built by scripts/build_ports.sh (rebuilt from the upstream sources by ./build.sh)
+/ports/bin/
+
+# Third-party downloads the Makefile would otherwise fetch (Limine bootloader + protocol header)
+/limine/
+/limine-protocol/
+
+# Disk images made for testing
+*.img
+*.iso
+
+# Python, editors, OS clutter
+__pycache__/
+*.pyc
+*.swp
+*~
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

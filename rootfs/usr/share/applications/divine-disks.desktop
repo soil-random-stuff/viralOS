@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Disks
+Comment=Format, partition, resize and mount drives.
+Icon=/usr/share/dde-res/Icons/Apps/DiskUtil.png
+Exec=/usr/bin/divine-disks

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Music
+Comment=Play your MP3 songs.
+Icon=/usr/share/dde-res/Icons/Apps/Music.png
+Exec=/usr/bin/divine-music

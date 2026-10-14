@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=File Manager
+Comment=Manage files on your computer.
+Icon=/usr/share/dde-res/Icons/Apps/Files.png
+Exec=/usr/bin/divine-files

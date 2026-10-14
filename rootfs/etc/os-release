@@ -1,0 +1,6 @@
+NAME="viralOS"
+VERSION="0.6"
+ID=viralos
+PRETTY_NAME="viralOS 0.6 (x86_64)"
+KERNEL="viralKernel"
+DESKTOP="DDE (Divine Desktop Environment)"

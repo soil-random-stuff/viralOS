@@ -1,0 +1,7 @@
+# Cursor hot spots: the pixel (x, y) that does the pointing.
+arrow.png 6 3
+hand.png 12 2
+resize_ew.png 15 15
+resize_ns.png 15 15
+resize_nwse.png 15 15
+resize_nesw.png 15 15

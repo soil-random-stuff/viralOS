@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Calculator
+Comment=Add, subtract, multiply and divide.
+Icon=/usr/share/dde-res/Icons/Apps/Calculator.png
+Exec=/usr/bin/divine-calc

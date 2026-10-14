@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Network, sound, wallpaper, desktop and more.
+Icon=/usr/share/dde-res/Icons/Apps/Settings.png
+Exec=/usr/bin/divine-settings
