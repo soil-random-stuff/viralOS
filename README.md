@@ -66,7 +66,7 @@ saves screenshots in `build/`).
 
 ## Credits
 
-viralOS stands on a lot of great open-source work:
+viralOS stands on a lot of great free and open-source work:
 
 - **Limine**: the bootloader
 - **lwIP**: the TCP/IP stack
@@ -76,7 +76,7 @@ viralOS stands on a lot of great open-source work:
 - **e2fsprogs, ntfsprogs-plus, dosfstools, exfatprogs, GNU parted and fatresize**: the disk tools, built from their upstream sources against **musl** libc
 - **DejaVu** fonts and the **Terminus** console font
 - **Icons8**: the icons ([icons8.com](https://icons8.com))
-- **Syn Cole – Feel Good** [NCS Release]: the sample song
+- **Syn Cole – Feel Good** [NCS Release]: the sample song i used for testing the audio thing
 
 Built with [Claude Code](https://claude.com/claude-code).
 
